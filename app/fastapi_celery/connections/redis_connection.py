@@ -1,8 +1,11 @@
+import json
+from typing import Any
 import redis
 from redis.exceptions import RedisError
 import config_loader
 from utils import log_helpers
 from models.tracking_models import ServiceLog, LogType
+from models.class_models import WorkflowStep
 
 # === Set up logging ===
 logger = log_helpers.get_logger("Redis Connection")
@@ -20,197 +23,309 @@ class RedisConnector:
             decode_responses=True,
         )
 
-    def store_step_status(
-        self,
-        task_id: str,
-        step_name: str,
-        status: str,
-        step_id: str | None = None,
-        ttl: int = 3600,
-    ) -> bool:
-        """Store step status (and optional step_id) for a task."""
-        status_key = f"task:{task_id}:step_statuses"
-        ids_key = f"task:{task_id}:step_ids"
+    # === Store step_processing ===
+    def store_step_processing(self, celery_id: str, data: dict, ttl: int = 3600) -> bool:
+        """Store step_processing data for a specific Celery task step."""
         try:
-            self.redis_client.hset(status_key, step_name, status)
-            if step_id:
-                self.redis_client.hset(ids_key, step_name, step_id)
-            self.redis_client.expire(status_key, ttl)
-            self.redis_client.expire(ids_key, ttl)
+            step = data.get("step")
+            workflow_step_id = (
+                step.workflowStepId if hasattr(step, "workflowStepId") else step.get("workflowStepId")
+            )
+            name = f"celery_task:{celery_id}:step_id:{workflow_step_id}"
+
+            # Serialize complex types
+            serialized_data = {
+                k: json.dumps(v, default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o))
+                for k, v in data.items()
+            }
+
+            self.redis_client.hset(name=name, mapping=serialized_data)
+            self.redis_client.expire(name, ttl)
+
             logger.info(
-                "[Redis] Stored step status successfully",
+                "[Redis] Stored step_processing successfully",
                 extra={
                     "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ACCESS,
-                    "task_id": task_id,
-                    "step_name": step_name,
-                    "status": status,
-                    "step_id": step_id,
-                    "ttl": ttl,
+                    "celery_id": celery_id,
+                    "workflow_step_id": workflow_step_id,
+                    "key": name,
+                    "data": serialized_data,
+                    "ttl_seconds": ttl,
                 },
             )
             return True
+
         except RedisError as e:
             logger.error(
-                "[Redis] Failed to store step status",
+                "[Redis] Failed to store step_processing",
                 exc_info=True,
                 extra={
                     "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    "task_id": task_id,
-                    "step_name": step_name,
-                    "status": status,
-                    "step_id": step_id,
+                    "celery_id": celery_id,
+                    "data": data,
                     "error_type": type(e).__name__,
                     "error_message": str(e),
                 },
             )
             return False
 
-    def get_all_step_status(self, task_id: str) -> dict[str, str]:
-        """Get all step statuses for a task."""
-        key = f"task:{task_id}:step_statuses"
+    # === Get step_processing ===
+    def get_step_processing(self, celery_id: str, workflow_step_id: str) -> dict[str, any] | None:
+        """Retrieve step_processing data for a specific step of a Celery task."""
+        name = f"celery_task:{celery_id}:step_id:{workflow_step_id}"
         try:
-            data = self.redis_client.hgetall(key)
-            logger.info(
-                "[Redis] Retrieved all step statuses successfully",
-                extra={
-                    "service": ServiceLog.REDIS_SERVICE,
-                    "log_type": LogType.ACCESS,
-                    "task_id": task_id,
-                    "redis_key": key,
-                    "step_count": len(data),
-                },
-            )
-            return data
-        except RedisError as e:
-            logger.error(
-                "[Redis] Failed to fetch all step statuses",
-                exc_info=True,
-                extra={
-                    "service": ServiceLog.REDIS_SERVICE,
-                    "log_type": LogType.ERROR,
-                    "task_id": task_id,
-                    "redis_key": key,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                },
-            )
-            return {}
-
-    def get_step_ids(self, task_id: str) -> dict[str, str]:
-        """Get all step IDs for a task."""
-        key = f"task:{task_id}:step_ids"
-        try:
-            data = self.redis_client.hgetall(key)
-            logger.info(
-                "[Redis] Retrieved all step IDs successfully",
-                extra={
-                    "service": ServiceLog.REDIS_SERVICE,
-                    "log_type": LogType.ACCESS,
-                    "task_id": task_id,
-                    "redis_key": key,
-                    "step_count": len(data),
-                },
-            )
-            return data
-        except RedisError as e:
-            logger.error(
-                "[Redis] Failed to fetch step IDs",
-                exc_info=True,
-                extra={
-                    "service": ServiceLog.REDIS_SERVICE,
-                    "log_type": LogType.ERROR,
-                    "task_id": task_id,
-                    "redis_key": key,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                },
-            )
-            return {}
-
-    def store_workflow_id(
-        self, task_id: str, workflow_id: str, status: str, ttl: int = 3600
-    ) -> bool:
-        """Store workflow_id and status with TTL."""
-        key = f"task:{task_id}:workflow_id"
-        try:
-            self.redis_client.hset(key, workflow_id, status)
-            self.redis_client.expire(key, ttl)
-            logger.info(
-                "[Redis] Stored workflow_id in Redis successfully",
-                extra={
-                    "service": ServiceLog.REDIS_SERVICE,
-                    "log_type": LogType.ACCESS,
-                    "task_id": task_id,
-                    "workflow_id": workflow_id,
-                    "status": status,
-                    "redis_key": key,
-                    "ttl_seconds": ttl,
-                },
-            )
-            return True
-        except RedisError as e:
-            logger.error(
-                "[Redis] Failed to store workflow_id in Redis",
-                exc_info=True,
-                extra={
-                    "service": ServiceLog.REDIS_SERVICE,
-                    "log_type": LogType.ERROR,
-                    "task_id": task_id,
-                    "workflow_id": workflow_id,
-                    "status": status,
-                    "redis_key": key,
-                    "ttl_seconds": ttl,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                },
-            )
-            return False
-
-    def get_workflow_id(self, task_id: str) -> dict[str, str] | None:
-        """Get workflow_id and status for a task."""
-        key = f"task:{task_id}:workflow_id"
-        try:
-            data = self.redis_client.hgetall(key)
+            data = self.redis_client.hgetall(name)
             if not data:
                 logger.info(
-                    "[Redis] No workflow_id found",
+                    "[Redis] No step_processing data found",
                     extra={
                         "service": ServiceLog.REDIS_SERVICE,
                         "log_type": LogType.ACCESS,
-                        "task_id": task_id,
-                        "redis_key": key,
+                        "celery_id": celery_id,
+                        "workflow_step_id": workflow_step_id,
+                        "key": name,
                     },
                 )
                 return None
-            workflow_id, status = next(iter(data.items()))
+
+            deserialized = {}
+            for k, v in data.items():
+                try:
+                    deserialized[k] = json.loads(v)
+                except (TypeError, json.JSONDecodeError):
+                    deserialized[k] = v  # fallback
+
             logger.info(
-                "[Redis] Retrieved workflow_id successfully",
+                "[Redis] Retrieved step_processing successfully",
                 extra={
                     "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ACCESS,
-                    "task_id": task_id,
-                    "workflow_id": workflow_id,
-                    "status": status,
+                    "celery_id": celery_id,
+                    "workflow_step_id": workflow_step_id,
+                    "key": name,
+                    "data": deserialized,
                 },
             )
-            return {"workflow_id": workflow_id, "status": status}
+            return deserialized
+
         except RedisError as e:
             logger.error(
-                "[Redis] Failed to fetch workflow_id",
+                "[Redis] Failed to fetch step_processing",
                 exc_info=True,
                 extra={
                     "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    "task_id": task_id,
-                    "redis_key": key,
+                    "celery_id": celery_id,
+                    "workflow_step_id": workflow_step_id,
+                    "key": name,
                     "error_type": type(e).__name__,
                     "error_message": str(e),
                 },
             )
             return None
 
+    # === Update step fields ===
+    def update_step_fields(self, celery_id: str, workflow_step_id: str, fields: dict) -> bool:
+        """Update specific fields for a step_processing record."""
+        name = f"celery_task:{celery_id}:step_id:{workflow_step_id}"
+        try:
+            if not self.redis_client.exists(name):
+                logger.warning(
+                    "[Redis] Step key not found for update",
+                    extra={
+                        "service": ServiceLog.REDIS_SERVICE,
+                        "log_type": LogType.WARNING,
+                        "celery_id": celery_id,
+                        "workflow_step_id": workflow_step_id,
+                        "fields": fields,
+                        "key": name,
+                    },
+                )
+                return False
+
+            serialized_fields = {
+                k: json.dumps(v, default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o))
+                for k, v in fields.items()
+            }
+
+            self.redis_client.hset(name=name, mapping=serialized_fields)
+
+            logger.info(
+                "[Redis] Updated step_processing fields successfully",
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "celery_id": celery_id,
+                    "workflow_step_id": workflow_step_id,
+                    "updated_fields": serialized_fields,
+                    "key": name,
+                },
+            )
+            return True
+
+        except RedisError as e:
+            logger.error(
+                "[Redis] Failed to update step_processing fields",
+                exc_info=True,
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ERROR,
+                    "celery_id": celery_id,
+                    "workflow_step_id": workflow_step_id,
+                    "fields": fields,
+                    "key": name,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                },
+            )
+            return False
+
+    # === Get all steps for task ===
+    def get_all_steps_for_task(self, celery_id: str) -> dict[str, dict]:
+        """Retrieve all step_processing data for a given celery_id."""
+        pattern = f"celery_task:{celery_id}:step_id:*"
+        result = {}
+        for key in self.redis_client.scan_iter(pattern):
+            step_id = (key.decode() if isinstance(key, bytes) else key).split(":")[-1]
+            result[step_id] = self.get_step_processing(celery_id, step_id)
+        return result
+
+    # === Store celery_task ===
+    def store_celery_task(self, celery_id: str, data: dict, ttl: int = 3600) -> bool:
+        """Store celery_task in Redis (values serialized as JSON)."""
+        name = f"celery_task:{celery_id}"
+        try:
+            # Ensure all values are strings (serialize complex types)
+            serialized_data = {
+                k: json.dumps(v, default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o))
+                for k, v in data.items()
+            }
+
+            self.redis_client.hset(name=name, mapping=serialized_data)
+            self.redis_client.expire(name, ttl)
+
+            logger.info(
+                "[Redis] Stored celery_task in Redis successfully",
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "celery_id": celery_id,
+                    "key": name,
+                    "data": serialized_data,
+                    "ttl_seconds": ttl,
+                },
+            )
+            return True
+
+        except RedisError as e:
+            logger.error(
+                "[Redis] Failed to store celery_task in Redis",
+                exc_info=True,
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ERROR,
+                    "celery_id": celery_id,
+                    "key": name,
+                    "data": data,
+                    "ttl_seconds": ttl,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                },
+            )
+            return False
+    
+    # === Get celery_task ===
+    def get_celery_task(self, celery_id: str) -> dict[str, Any] | None:
+        """Get celery_task from Redis (auto-deserialize JSON values)."""
+        name = f"celery_task:{celery_id}"
+        try:
+            data = self.redis_client.hgetall(name)
+            if not data:
+                logger.info(
+                    "[Redis] No celery_task found",
+                    extra={
+                        "service": ServiceLog.REDIS_SERVICE,
+                        "log_type": LogType.ACCESS,
+                        "celery_id": celery_id,
+                        "key": name,
+                    },
+                )
+                return None
+
+            # Deserialize JSON values if possible
+            for k, v in data.items():
+                try:
+                    data[k] = json.loads(v)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            logger.info(
+                "[Redis] Retrieved celery_task successfully",
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "celery_id": celery_id,
+                    "key": name,
+                    "data": data,
+                },
+            )
+            return data
+        except RedisError as e:
+            logger.error(
+                "[Redis] Failed to fetch celery_task",
+                exc_info=True,
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ERROR,
+                    "celery_id": celery_id,
+                    "key": name,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                },
+            )
+            return None
+    
+    # === Update celery_task fields ===
+    def update_celery_task_fields(self, celery_id: str, fields: dict[str, any]) -> bool:
+        """Update specific fields in Redis for a Celery task."""
+        name = f"celery_task:{celery_id}"
+        try:
+            # Serialize values to JSON
+            serialized = {k: json.dumps(v) for k, v in fields.items()}
+
+            # Update Redis hash
+            self.redis_client.hset(name, mapping=serialized)
+
+            logger.info(
+                "[Redis] Updated celery_task fields successfully",
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "celery_id": celery_id,
+                    "key": name,
+                    "fields": serialized,
+                },
+            )
+            return True
+
+        except RedisError as e:
+            logger.error(
+                "[Redis] Failed to update celery_task fields",
+                exc_info=True,
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ERROR,
+                    "celery_id": celery_id,
+                    "key": name,
+                    "fields": fields,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                },
+            )
+            return False
+    
     def store_jwt_token(self, token: str, ttl: int) -> bool:
         """Store JWT token with TTL."""
         try:

@@ -59,13 +59,33 @@ def test_process_file_failure(mock_connection, mock_apply_async, mock_apply_asyn
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
 @patch("fastapi_celery.routers.api_file_processor.BEConnector")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_step_ids")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_step_status")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_workflow_id")
-async def test_stop_task_success(mock_get_workflow_id, mock_get_step_statuses, mock_get_step_ids, mock_BEConnector, mock_revoke):
-    mock_get_workflow_id.return_value = {"workflow_id": "wf_1", "status": StatusEnum.PROCESSING}
-    mock_get_step_ids.return_value = {"step1": "step_1"}
-    mock_get_step_statuses.return_value = {"step1": "InProgress"}
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
+async def test_stop_task_success(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+    # --- Mock redis task ---
+    mock_get_celery_task.return_value = {
+        "status": StatusEnum.PROCESSING.name,
+        "file_record": {"target_bucket_name": "mock-bucket"},
+        "tracking_model": {
+            "tracking_id": "track_123",
+            "request_id": "req_001",
+        },
+        "start_session_model": {"id": "session_1"},
+    }
+
+    # --- Mock steps data ---
+    mock_get_all_steps_for_task.return_value = {
+        "step_1": {
+            "status": "PROCESSING",
+            "step": {
+                "workflowStepId": "1",
+                "stepName": "Step 1",
+                "stepOrder": 1,
+            },
+            "start_step_model": {"workflowHistoryId": "hist_1"},
+        }
+    }
+
     fut = asyncio.Future()
     fut.set_result(MagicMock(status_code=200))
     mock_BEConnector.return_value.post = MagicMock(return_value=fut)
@@ -82,12 +102,13 @@ async def test_stop_task_success(mock_get_workflow_id, mock_get_step_statuses, m
 @pytest.mark.asyncio
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
-@patch("fastapi_celery.routers.api_file_processor.BEConnector")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_step_ids")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_step_status")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_workflow_id")
-async def test_stop_task_failure(mock_get_workflow_id, mock_get_step_statuses, mock_get_step_ids, mock_BEConnector, mock_revoke):
-    mock_get_workflow_id.return_value = None
+@patch("fastapi_celery.routers.api_file_processor.BEConnector") 
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
+async def test_stop_task_failure(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+    mock_get_all_steps_for_task.return_value = None
+    mock_get_celery_task.return_value = {}
+
     payload = {"task_id": "task_123", "reason": "Manual stop"}
     response = client.post("/tasks/stop", json=payload)
 
@@ -95,19 +116,35 @@ async def test_stop_task_failure(mock_get_workflow_id, mock_get_step_statuses, m
     res_json = response.json()
     assert res_json["error"] == "Workflow ID not found for task"
     mock_revoke.assert_not_called()
+    mock_BEConnector.assert_not_called()
 
 
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
 @patch("fastapi_celery.routers.api_file_processor.BEConnector")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_step_ids")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_step_status")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_workflow_id")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
 @patch("fastapi_celery.routers.api_file_processor.logger")
-def test_stop_task_exception_handling(mock_logger, mock_get_workflow_id, mock_get_step_statuses, mock_get_step_ids, mock_BEConnector, mock_revoke):
-    mock_get_workflow_id.return_value = {"workflow_id": "wf_1", "status": StatusEnum.PROCESSING}
-    mock_get_step_ids.return_value = {"step1": "step_1"}
-    mock_get_step_statuses.return_value = {"step1": "InProgress"}
+def test_stop_task_exception_handling(mock_logger, mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+    mock_get_celery_task.return_value = {
+        "status": StatusEnum.PROCESSING.name,
+        "file_record": {"target_bucket_name": "mock-bucket"},
+        "tracking_model": {"tracking_id": "track_123", "request_id": "req_001"},
+        "start_session_model": {"id": "session_1"},
+    }
+
+    mock_get_all_steps_for_task.return_value = {
+        "step_1": {
+            "status": "PROCESSING",
+            "step": {
+                "workflowStepId": "1", 
+                "stepName": "Step 1",
+                 "stepOrder": 1
+            },
+            "start_step_model": {"workflowHistoryId": "hist_1"},
+        }
+    }
+
     mock_BEConnector.return_value.post.side_effect = Exception("Simulated BEConnector Exception")
 
     payload = {"task_id": "task_123", "reason": "Manual stop"}
@@ -123,13 +160,28 @@ def test_stop_task_exception_handling(mock_logger, mock_get_workflow_id, mock_ge
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
 @patch("fastapi_celery.routers.api_file_processor.BEConnector")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_step_ids")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_step_status")
-@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_workflow_id")
-async def test_stop_task_inprogress_flow(mock_get_workflow_id, mock_get_step_statuses, mock_get_step_ids, mock_BEConnector, mock_revoke):
-    mock_get_workflow_id.return_value = {"workflow_id": "wf_1", "status": StatusEnum.PROCESSING}
-    mock_get_step_ids.return_value = {"step1": "step_1"}
-    mock_get_step_statuses.return_value = {"step1": "InProgress"}
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
+async def test_stop_task_inprogress_flow(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+    mock_get_celery_task.return_value = {
+        "status": StatusEnum.PROCESSING.name,
+        "file_record": {"target_bucket_name": "mock-bucket"},
+        "tracking_model": {"tracking_id": "track_123", "request_id": "req_001"},
+        "start_session_model": {"id": "session_1"},
+    }
+    
+    mock_get_all_steps_for_task.return_value = {
+        "step_1": {
+            "status": "PROCESSING",
+            "step": {
+                "workflowStepId": "1",
+                "stepName": "Step 1",
+                "stepOrder": 1,
+            },
+            "start_step_model": {"workflowHistoryId": "hist_1"},
+        }
+    }
+
 
     fut = asyncio.Future()
     fut.set_result(MagicMock(status_code=200))

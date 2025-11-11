@@ -164,10 +164,14 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
     )
 
     # === Update Redis ===
-    redis_connector.store_workflow_id(
-        task_id=tracking_model.request_id,
-        workflow_id=workflow_model.id,
-        status=StatusEnum.PROCESSING,
+    redis_connector.store_celery_task(
+        celery_id=tracking_model.request_id,
+        data={
+            "tracking_model": tracking_model, 
+            "file_record": file_processor.file_record, 
+            "start_session_model": start_session_model,
+            "status": StatusEnum.PROCESSING.name
+        }
     )
 
     try:
@@ -187,17 +191,15 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
         status_step_result = True
         for step in sorted_steps:
             # === Start step ===
-            _ = await call_workflow_step_start(
+            start_step_model = await call_workflow_step_start(
                 context_data=context_data,
                 step=step,
             )
 
             # === Update Redis ===
-            redis_connector.store_step_status(
-                task_id=tracking_model.request_id,
-                step_name=step.stepName,
-                status=StatusEnum.PROCESSING,
-                step_id=step.workflowStepId,
+            redis_connector.store_step_processing(
+                celery_id=tracking_model.request_id,
+                data={"step": step, "start_step_model": start_step_model, "status": StatusEnum.PROCESSING.name},
             )
 
             # === Execute step ===
@@ -213,12 +215,11 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
             
             s3_key_prefix = get_s3_key_prefix(file_processor.file_record, tracking_model, step)
             
-            # === Update Redis ===
-            redis_connector.store_step_status(
-                task_id=tracking_model.request_id,
-                step_name=step.stepName,
-                status=step_result.step_status,
-                step_id=step.workflowStepId,
+            # === Update Redis ===                       
+            redis_connector.update_step_fields(
+                celery_id=tracking_model.request_id,
+                workflow_step_id=step.workflowStepId,
+                fields={"status": step_result.step_status},
             )
 
             # === Finish step ===
@@ -249,11 +250,12 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
                 break
 
 
-        # === Update Redis ===
-        redis_connector.store_workflow_id(
-            task_id=tracking_model.request_id,
-            workflow_id=workflow_model.id,
-            status=step_result.step_status,
+        # === Update Redis ===       
+        redis_connector.update_celery_task_fields(
+            celery_id=tracking_model.request_id,
+            fields={
+                "status": step_result.step_status,
+            },
         )
 
         # === Finish session ===
@@ -275,10 +277,11 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
 
     except Exception:
         # Update Redis
-        redis_connector.store_workflow_id(
-            task_id=tracking_model.request_id,
-            workflow_id=workflow_model.id,
-            status=StatusEnum.FAILED,
+        redis_connector.update_celery_task_fields(
+            celery_id=tracking_model.request_id,
+            fields={
+                "status": StatusEnum.FAILED.name,
+            },
         )
 
         # Reraise the original exception to keep full traceback

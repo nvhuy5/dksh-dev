@@ -1,4 +1,5 @@
 # tests/test_redis_connection.py
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 from redis.exceptions import RedisError
@@ -13,135 +14,142 @@ STEP_ID = "step-id-001"
 WORKFLOW_ID = "workflow-xyz"
 
 # -------------------------
-# store_step_status
+# store_step_processing
 # -------------------------
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_store_step_status_success(mock_redis_class):
+def test_store_step_processing_success(mock_redis_class):
     mock_redis = mock_redis_class.return_value
     mock_redis.hset.return_value = True
     mock_redis.expire.return_value = True
+    data = {"step": {"workflowStepId": "step1"}, "status": "PROCESSING"}
 
     redis_conn = RedisConnector()
-    result = redis_conn.store_step_processing(TASK_ID, STEP_NAME, STATUS, STEP_ID)
+    result = redis_conn.store_step_processing(TASK_ID, data)
     assert result is True
-    assert mock_redis.hset.call_count == 2
-    assert mock_redis.expire.call_count == 2
+    assert mock_redis.hset.call_count == 1
+    assert mock_redis.expire.call_count == 1
 
 
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_store_step_status_no_step_id(mock_redis_class):
-    mock_redis = mock_redis_class.return_value
-    redis_conn = RedisConnector()
-    result = redis_conn.store_step_processing(TASK_ID, STEP_NAME, STATUS)
-    assert result is True
-    mock_redis.hset.assert_called_once()  # only step_status
-    mock_redis.expire.assert_called()
-
-
-@patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_store_step_status_failure(mock_redis_class):
+def test_store_step_processing_redis_failure(mock_redis_class):
     mock_redis = mock_redis_class.return_value
     mock_redis.hset.side_effect = RedisError("Connection error")
+    data = {"step": {"workflowStepId": "step1"}}
 
     redis_conn = RedisConnector()
-    result = redis_conn.store_step_processing(TASK_ID, STEP_NAME, STATUS)
+    result = redis_conn.store_step_processing(TASK_ID, data)
     assert result is False
 
-
-# -------------------------
-# get_all_step_status
-# -------------------------
+# # -------------------------
+# # get_step_processing
+# # -------------------------
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_get_all_step_status_success(mock_redis_class):
+def test_get_step_processing_success(mock_redis_class):
     mock_redis = mock_redis_class.return_value
-    mock_redis.hgetall.return_value = {STEP_NAME: STATUS}
+    mock_redis.hgetall.return_value = {"status": json.dumps("done")}
 
     redis_conn = RedisConnector()
-    result = redis_conn.get_all_step_status(TASK_ID)
-    assert result == {STEP_NAME: STATUS}
+    result = redis_conn.get_step_processing(TASK_ID, "123")
+    assert result == {"status": "done"}
 
-
-@patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_get_all_step_status_failure(mock_redis_class):
+@patch("fastapi_celery.connections.redis_connection.redis.Redis")  
+def test_get_step_processing_failure(mock_redis_class):
     mock_redis = mock_redis_class.return_value
     mock_redis.hgetall.side_effect = RedisError("Connection error")
 
     redis_conn = RedisConnector()
-    result = redis_conn.get_all_step_status(TASK_ID)
-    assert result == {}
+    result = redis_conn.get_step_processing(TASK_ID, "123")
+    assert result is None
 
-
-# -------------------------
-# get_step_ids
-# -------------------------
-@patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_get_step_ids_success(mock_redis_class):
+# # -------------------------
+# # update_step_fields
+# # -------------------------
+@patch("fastapi_celery.connections.redis_connection.redis.Redis")  
+def test_update_step_fields_success(mock_redis_class):
     mock_redis = mock_redis_class.return_value
-    mock_redis.hgetall.return_value = {STEP_NAME: STEP_ID}
+    mock_redis.exists.return_value = True
+    fields = {"status": "Success"}
 
     redis_conn = RedisConnector()
-    result = redis_conn.get_step_ids(TASK_ID)
-    assert result == {STEP_NAME: STEP_ID}
+    result = redis_conn.update_step_fields(TASK_ID, "123", fields)
+    assert result is True
 
-
-@patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_get_step_ids_failure(mock_redis_class):
+@patch("fastapi_celery.connections.redis_connection.redis.Redis")  
+def test_update_step_fields_missing_key(mock_redis_class):
     mock_redis = mock_redis_class.return_value
-    mock_redis.hgetall.side_effect = RedisError("Connection error")
+    mock_redis.exists.return_value = False
 
     redis_conn = RedisConnector()
-    result = redis_conn.get_step_ids(TASK_ID)
-    assert result == {}
+    result = redis_conn.update_step_fields(TASK_ID, "123", {"a": "b"})
+    assert result is False
 
-
-# -------------------------
-# store_workflow_id
-# -------------------------
-@patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_store_workflow_id_success(mock_redis_class):
+@patch("fastapi_celery.connections.redis_connection.redis.Redis")  
+def test_update_step_fields_failure(mock_redis_class):
     mock_redis = mock_redis_class.return_value
-    mock_redis.hset.return_value = True
-    mock_redis.expire.return_value = True
+    mock_redis.hset.side_effect = RedisError("Redis fail")
 
     redis_conn = RedisConnector()
-    result = redis_conn.store_celery_task(TASK_ID, WORKFLOW_ID, STATUS)
+    result = redis_conn.update_step_fields(TASK_ID, "123", {"a": "b"})
+    assert result is False
+
+# # -------------------------
+# # get_all_steps_for_task
+# # -------------------------
+@patch("fastapi_celery.connections.redis_connection.redis.Redis")  
+def test_get_all_steps_for_task_success(mock_redis_class):
+    mock_redis = mock_redis_class.return_value
+    mock_redis.scan_iter.return_value = [b"celery_task:task123:step_id:step1"]
+
+    redis_conn = RedisConnector()
+    with patch.object(redis_conn, "get_step_processing", return_value={"ok": True}) as mock_get:
+        result = redis_conn.get_all_steps_for_task("task123")
+
+    assert "step1" in result
+    assert result["step1"] == {"ok": True}
+
+# # -------------------------
+# # store_celery_task
+# # -------------------------
+@patch("fastapi_celery.connections.redis_connection.redis.Redis")
+def test_store_celery_task_success(mock_redis_class):
+    mock_redis = mock_redis_class.return_value
+    data = {"status": "running"}
+
+    redis_conn = RedisConnector()
+    result = redis_conn.store_celery_task(TASK_ID, data)
     assert result is True
     mock_redis.hset.assert_called_once()
     mock_redis.expire.assert_called_once()
 
-
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_store_workflow_id_failure(mock_redis_class):
+def test_store_celery_task_failure(mock_redis_class):
     mock_redis = mock_redis_class.return_value
-    mock_redis.hset.side_effect = RedisError("Connection error")
+    mock_redis.hset.side_effect = RedisError("Redis fail")
 
     redis_conn = RedisConnector()
-    result = redis_conn.store_celery_task(TASK_ID, WORKFLOW_ID, STATUS)
+    result = redis_conn.store_celery_task(TASK_ID, {"x": 1})
     assert result is False
 
-
-# -------------------------
-# get_workflow_id
-# -------------------------
+# # -------------------------
+# # get_celery_task
+# # -------------------------
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_get_workflow_id_success(mock_redis_class):
+def test_get_celery_task_success(mock_redis_class):
     mock_redis = mock_redis_class.return_value
-    mock_redis.hgetall.return_value = {WORKFLOW_ID: STATUS}
+    mock_redis.hgetall.return_value = {"status": json.dumps("done")}
 
     redis_conn = RedisConnector()
-    result = redis_conn.get_workflow_id(TASK_ID)
-    assert result == {"workflow_id": WORKFLOW_ID, "status": STATUS}
-
+    result = redis_conn.get_celery_task(TASK_ID)
+    assert result == {"status": "done"}
 
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
-def test_get_workflow_id_failure(mock_redis_class):
+def test_get_celery_task_failure(mock_redis_class):
     mock_redis = mock_redis_class.return_value
     mock_redis.hgetall.side_effect = RedisError("Connection error")
 
     redis_conn = RedisConnector()
-    result = redis_conn.get_workflow_id(TASK_ID)
+    result = redis_conn.get_celery_task(TASK_ID)
     assert result is None
-
 
 # -------------------------
 # JWT token store & get
@@ -168,7 +176,6 @@ def test_store_jwt_token_failure(mock_redis_class):
     redis_conn = RedisConnector()
     result = redis_conn.store_jwt_token("jwt-token", 3600)
     assert result is False
-
 
 @patch("fastapi_celery.connections.redis_connection.redis.Redis")
 def test_get_jwt_token_failure(mock_redis_class):

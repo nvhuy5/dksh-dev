@@ -1,13 +1,18 @@
+import json
 import traceback
+from dataclasses import asdict
 from fastapi import APIRouter, HTTPException, status, Request
 from fastapi.responses import JSONResponse
+from utils.bucket_helper import get_s3_key_prefix
+from models.body_models import WorkflowSessionFinishBody, WorkflowStepFinishBody
 from models.class_models import (
     FilePathRequest,
     StopTaskRequest,
     ApiUrl,
     StatusEnum,
+    WorkflowStep,
 )
-from models.tracking_models import ServiceLog, LogType
+from models.tracking_models import ServiceLog, LogType, TrackingModel
 from celery_worker import celery_task
 from utils import log_helpers
 from uuid import uuid4
@@ -92,7 +97,8 @@ async def process_file(data: FilePathRequest, http_request: Request) -> Dict[str
 # stop a stask
 @router.post("/tasks/stop", summary="Stop a running task by providing the task_id")
 async def stop(data: StopTaskRequest) -> Dict[str, Any]:
-    """Stop a running task by revoking its Celery task and updating the workflow.
+    """
+    Stop a running task by revoking its Celery task and updating the workflow.
 
     Retrieves workflow and step details from Redis, revokes the Celery task if in progress,
     and notifies the backend API. Returns success status or error response.
@@ -112,21 +118,20 @@ async def stop(data: StopTaskRequest) -> Dict[str, Any]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="This endpoint is temporarily disabled.",
         )
-    redis_utils = RedisConnector()
-    task_id = data.task_id
+    redis_connector = RedisConnector()
+    celery_id = data.task_id
     reason = data.reason or "Stopped manually by user"
 
-    redis_workflow = redis_utils.get_workflow_id(task_id)
-    step_ids = redis_utils.get_step_ids(task_id)
-    step_statuses = redis_utils.get_all_step_status(task_id)
-
-    if not redis_workflow:
+    celery_task = redis_connector.get_celery_task(celery_id)
+    steps = redis_connector.get_all_steps_for_task(celery_id)
+    
+    if not celery_task:
         logger.warning(
-            f"Workflow not found for task_id: {task_id}",
+            f"Workflow not found for task_id: {celery_id}",
             extra={
                 "service": ServiceLog.API_GATEWAY,
                 "log_type": LogType.ERROR,
-                "traceability": task_id,
+                "traceability": celery_id,
             },
         )
         return JSONResponse(
@@ -134,73 +139,86 @@ async def stop(data: StopTaskRequest) -> Dict[str, Any]:
             content={
                 "status_code": status.HTTP_404_NOT_FOUND,
                 "error": "Workflow ID not found for task",
-                "task_id": task_id,
+                "task_id": celery_id,
             },
         )
-
-    if redis_workflow["status"] != StatusEnum.PROCESSING:
+    
+    if celery_task["status"] != StatusEnum.PROCESSING.name:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "error": "Workflow has been done or stopped! Cannot stop the task",
-                "task_id": task_id,
+                "task_id": celery_id,
             },
         )
+        
+    # Kill the running process
+    celery_app.control.revoke(celery_id, terminate=True, signal="SIGKILL")
+    logger.info(
+        f"Revoked Celery task {celery_id} with reason: {reason}",
+        extra={
+            "service": ServiceLog.API_GATEWAY,
+            "log_type": LogType.TASK,
+            "traceability": celery_id,
+        },
+    )
 
     try:
-        for step_name, step_status in step_statuses.items():
-            if step_status == "InProgress":
-                step_id = step_ids.get(step_name)
-
+        file_record = celery_task["file_record"]
+        tracking_model = TrackingModel(**celery_task["tracking_model"])
+        start_session_model = celery_task["start_session_model"]
+        target_bucket_name = file_record["target_bucket_name"]
+        
+        for step_id, step_data in steps.items():
+            if step_data["status"] == "PROCESSING":
+                step = WorkflowStep(**step_data["step"])
+                step_name = step.stepName
+                data_output = {}
+                tmp_data_output = ""
+                s3_key_prefix = get_s3_key_prefix(file_record, tracking_model, step)
+                data_output["fileLogLink"] = f"{target_bucket_name}/{s3_key_prefix}"
+                tmp_data_output = json.dumps(data_output)
+                
+                start_step_model = step_data["start_step_model"]
+                
                 # Update step status to CANCEL
-                await BEConnector(
-                    ApiUrl.WORKFLOW_STEP_FINISH.full_url(),
-                    {
-                        "workflowHistoryId": redis_workflow["workflow_id"],
-                        "stepId": step_id,
-                        "code": StatusEnum.CANCEL,
-                        "message": f"Step '{step_name}' was stopped manually.",
-                        "dataInput": None,
-                        "dataOutput": None,
-                    },
-                ).post()
+                body_data = asdict(WorkflowStepFinishBody(
+                    workflowHistoryId=start_step_model["workflowHistoryId"],
+                    code=StatusEnum.CANCEL.value,
+                    message=f"Step [{step_name}] was manually canceled by the user",
+                    dataOutput=tmp_data_output,
+                ))
+                    
+                finish_step_connector = BEConnector(ApiUrl.WORKFLOW_STEP_FINISH.full_url(), body_data=body_data)
+                finish_step_response = await finish_step_connector.post()
+                logger.info(f"finish_step_response_log: [{finish_step_response}]")
 
         # Update session status to CANCEL
-        await BEConnector(
-            ApiUrl.WORKFLOW_SESSION_FINISH.full_url(),
-            {
-                "id": task_id,
-                "code": StatusEnum.CANCEL,
-                "message": f"Session stopped: {reason}",
-            },
-        ).post()
+        body_data = asdict(WorkflowSessionFinishBody(
+            id=start_session_model["id"],
+            code=StatusEnum.CANCEL.value,
+            message="The session has been stopped by the user",
+        ))
+        session_connector = BEConnector(ApiUrl.WORKFLOW_SESSION_FINISH.full_url(), body_data=body_data)
+        session_response = await session_connector.post()
 
-        # Kill the running process
-        celery_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
-        logger.info(
-            f"Revoked Celery task {task_id} with reason: {reason}",
-            extra={
-                "service": ServiceLog.API_GATEWAY,
-                "log_type": LogType.TASK,
-                "traceability": task_id,
-            },
-        )
-
+        logger.info(f"session_response_log: [{session_response}]")
+  
         return {
             "status": "Task stopped successfully",
-            "task_id": task_id,
+            "task_id": celery_id,
             "message": reason,
         }
 
     except Exception as e:
         full_tb = traceback.format_exception(type(e), e, e.__traceback__)
         logger.error(
-            f"Failed to stop task {task_id}!\n",
+            f"Failed to stop task {celery_id}!\n",
             extra={
                 "service": ServiceLog.API_GATEWAY,
                 "log_type": LogType.ERROR,
-                "traceability": task_id,
+                "traceability": celery_id,
                 "traceback": full_tb,
             },
         )
