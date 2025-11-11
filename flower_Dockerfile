@@ -4,9 +4,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PATH=/home/celeryuser/.local/bin:$PATH
 ENV FLOWER_UNAUTHENTICATED_API=1
 
-RUN apk update && apk add --no-cache bash dos2unix curl ca-certificates
-COPY ./tma-ADCA-CA.crt /usr/local/share/ca-certificates/tma-ADCA-CA.crt
-RUN update-ca-certificates
 
 RUN apk update && apk add --no-cache bash curl
 RUN curl -k -o /usr/local/bin/wait-for-it https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh \

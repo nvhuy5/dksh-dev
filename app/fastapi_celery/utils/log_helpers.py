@@ -1,7 +1,17 @@
+import os
+import dataclasses
+import logging
 import logging.config
+from typing import Any, Dict
+from enum import Enum
+from pydantic import BaseModel
+from models.tracking_models import LogType, ServiceLog
 import config_loader
-from models.traceability_models import LogType, ServiceLog
 
+
+# =========================
+# Global constants
+# =========================
 LOG_COLORS = {
     "DEBUG": "cyan",
     "INFO": "green",
@@ -15,23 +25,17 @@ EXCLUDED_FIELDS = [
     "log.origin",
 ]
 
-# Using a Bash script to create environment-specific log files.
-ENV = config_loader.get_config_value("environment", "env")
-LOG_LEVEL = "DEBUG" if ENV == "dev" else "INFO"
+# Determine environment and log level
+ENV = config_loader.get_config_value("environment", "env") or "dev"
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG" if ENV == "dev" else "INFO")
 
 
-def logging_config(logger: str) -> None:
+# =========================
+# Logging Configuration
+# =========================
+def logging_config(logger_name: str) -> None:
     """
-    Configure a logger with console and file handlers.
-
-    Sets up a logger with colored console output and file logging in a temporary directory.
-
-    Args:
-        logger (str): Name of the logger to configure.
-
-    Raises:
-        PermissionError: If log directory or file cannot be created due to permissions.
-        OSError: If there are issues accessing the temporary directory.
+    Configure a logger with ECS console handler.
     """
     logging.config.dictConfig(
         {
@@ -51,10 +55,10 @@ def logging_config(logger: str) -> None:
                 }
             },
             "loggers": {
-                f"{logger}": {
+                f"{logger_name}": {
                     "level": LOG_LEVEL,
                     "handlers": ["console"],
-                    "propagate": True,
+                    "propagate": False,
                 },
             },
             "root": {
@@ -65,19 +69,17 @@ def logging_config(logger: str) -> None:
     )
 
 
+# =========================
+# Custom Logger Adapter
+# =========================
 class ValidatingLoggerAdapter(logging.LoggerAdapter):
     """
-    Validates and normalizes 'service' and 'log_type' fields in the log's extra dictionary.
-    Ensures they are members of ServiceLog and LogType enums.
-
-    Args:
-        extra (dict): The extra fields passed to the logger.
-
-    Returns:
-        dict: The validated and normalized extra fields.
+    Enhanced logger adapter:
+    - Validates and normalizes 'service' and 'log_type' fields.
+    - Automatically converts Pydantic models, Enums, and custom objects in `extra`.
     """
 
-    def validate_log_fields(self, extra: dict) -> dict:
+    def validate_log_fields(self, extra: Dict[str, Any]) -> Dict[str, Any]:
         if "service" in extra:
             service = extra["service"]
             if not isinstance(service, ServiceLog):
@@ -98,16 +100,67 @@ class ValidatingLoggerAdapter(logging.LoggerAdapter):
 
         return extra
 
+    def normalize_extra(self, extra: dict) -> dict:
+        """Convert complex objects in extra to safe, serializable forms."""
+        normalized = {}
+        for key, value in extra.items():
+            try:
+                # --- Pydantic (v2/v1) ---
+                if hasattr(value, "model_dump"):  # Pydantic v2
+                    normalized[key] = value.model_dump()
+                elif hasattr(value, "dict"):  # Pydantic v1
+                    normalized[key] = value.dict()
+
+                # --- Dataclass ---
+                elif dataclasses.is_dataclass(value):
+                    normalized[key] = dataclasses.asdict(value)
+
+                # --- Enum ---
+                elif isinstance(value, Enum):
+                    normalized[key] = str(value)
+
+                # --- Common JSON-friendly types ---
+                elif isinstance(value, (dict, list, tuple, str, int, float, bool, type(None))):
+                    normalized[key] = value
+
+                # --- Fallback: try string conversion ---
+                else:
+                    normalized[key] = str(value)
+
+            except Exception:
+                normalized[key] = f"<Unserializable: {type(value).__name__}>"
+        return normalized
+
     def process(self, msg, kwargs):
-        """
-        Start the log validation for extra attribute
-        """
         extra = kwargs.get("extra") or {}
         if not isinstance(extra, dict):
             extra = {}
+
         try:
-            kwargs["extra"] = self.validate_log_fields(extra)
-        except Exception:
-            # silently ignore validation errors to avoid breaking logging
-            pass
+            # validate ECS fields first
+            extra = self.validate_log_fields(extra)
+            # then normalize data fields
+            extra = self.normalize_extra(extra)
+            # always include environment info
+            extra.setdefault("environment", ENV)
+        except Exception as e:
+            logging.getLogger(__name__).debug(f"Log field validation failed: {e}")
+
+        kwargs["extra"] = extra
         return msg, kwargs
+
+
+# =========================
+# Helper function
+# =========================
+def get_logger(name: str) -> ValidatingLoggerAdapter:
+    """
+    Returns a ready-to-use logger with automatic validation and normalization.
+
+    Example:
+        logger = log_helpers.get_logger("Celery Task Execution")
+        logger.info("Task started", extra={"service": ServiceLog.TASK_EXECUTION})
+    """
+    logging_config(name)
+    base_logger = logging.getLogger(name)
+    return ValidatingLoggerAdapter(base_logger, {})

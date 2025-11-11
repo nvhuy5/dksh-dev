@@ -1,54 +1,17 @@
-# Standard Library Imports
-import logging
-import traceback
-from typing import Optional, Dict
-
-# Third-Party Imports
 import redis
 from redis.exceptions import RedisError
-
 import config_loader
 from utils import log_helpers
-from models.traceability_models import ServiceLog, LogType
-from utils.middlewares.request_context import get_context_value
+from models.tracking_models import ServiceLog, LogType
 
-# ===
-# Set up logging
-logger_name = "Redis Connection Config"
-log_helpers.logging_config(logger_name)
-base_logger = logging.getLogger(logger_name)
-
-# Wrap the base logger with the adapter
-logger = log_helpers.ValidatingLoggerAdapter(base_logger, {})
-# ===
-
-# === REDIS database === #
-# Connect to Redis
-logger.debug("Starting Redis Connection...")
+# === Set up logging ===
+logger = log_helpers.get_logger("Redis Connection")
 
 
-# === Store per-task workflow step statuses in Redis === #
 class RedisConnector:
-    def __init__(self):
-        # === Try to retrieve all traceability attributes when an object created
-        self.request_id = get_context_value("request_id")
-        self.traceability_context_values = {
-            key: val
-            for key in [
-                "file_path",
-                "workflow_name",
-                "workflow_id",
-                "document_number",
-                "document_type",
-            ]
-            if (val := get_context_value(key)) is not None
-        }
-        logger.debug(
-            f"Function: {__name__}\n"
-            f"RequestID: {self.request_id}\n"
-            f"TraceabilityContext: {self.traceability_context_values}"
-        )
+    """Redis connector for storing and retrieving workflow data."""
 
+    def __init__(self):
         self.redis_client = redis.Redis(
             host=config_loader.get_env_variable("REDIS_HOST", "localhost"),
             port=config_loader.get_env_variable("REDIS_PORT", 6379),
@@ -62,246 +25,209 @@ class RedisConnector:
         task_id: str,
         step_name: str,
         status: str,
-        step_id: Optional[str] = None,
+        step_id: str | None = None,
         ttl: int = 3600,
     ) -> bool:
-        """Store the status and optional ID of a workflow step in Redis.
-
-        Stores the step status and ID (if provided) in Redis hashes, sets a TTL for the keys,
-        and logs errors if the operation fails.
-
-        Args:
-            task_id (str): The ID of the task.
-            step_name (str): The name of the workflow step.
-            status (str): The status of the step.
-            step_id (Optional[str], optional): The ID of the step. Defaults to None.
-            ttl (int, optional): Time-to-live for the Redis keys in seconds. Defaults to 3600.
-
-        Returns:
-            bool: True if the operation succeeds, False otherwise.
-        """
-        logger.info(f"Finish tracking StepID: {step_id}...")
+        """Store step status (and optional step_id) for a task."""
+        status_key = f"task:{task_id}:step_statuses"
+        ids_key = f"task:{task_id}:step_ids"
         try:
-            step_status_key = f"task:{task_id}:step_statuses"
-            step_ids_key = f"task:{task_id}:step_ids"
-
-            self.redis_client.hset(step_status_key, step_name, status)
+            self.redis_client.hset(status_key, step_name, status)
             if step_id:
-                self.redis_client.hset(step_ids_key, step_name, step_id)
-
-            self.redis_client.expire(step_status_key, ttl)
-            self.redis_client.expire(step_ids_key, ttl)
-
+                self.redis_client.hset(ids_key, step_name, step_id)
+            self.redis_client.expire(status_key, ttl)
+            self.redis_client.expire(ids_key, ttl)
+            logger.info(
+                "[Redis] Stored step status successfully",
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "task_id": task_id,
+                    "step_name": step_name,
+                    "status": status,
+                    "step_id": step_id,
+                    "ttl": ttl,
+                },
+            )
             return True
         except RedisError as e:
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
             logger.error(
-                f"Redis error while storing step status for {task_id}: {e}!\n{short_tb}",
+                "[Redis] Failed to store step status",
+                exc_info=True,
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "step_name": step_name,
+                    "status": status,
+                    "step_id": step_id,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
                 },
             )
             return False
 
-    def get_step_statuses(self, task_id: str) -> Dict[str, str]:
-        """Retrieve the statuses of all steps for a task from Redis.
-
-        Fetches all step statuses stored in a Redis hash for the given task ID.
-        Logs errors if the operation fails.
-
-        Args:
-            task_id (str): The ID of the task.
-
-        Returns:
-            Dict[str, str]: A dictionary mapping step names to their statuses, or empty dict if the operation fails.
-        """
+    def get_all_step_status(self, task_id: str) -> dict[str, str]:
+        """Get all step statuses for a task."""
+        key = f"task:{task_id}:step_statuses"
         try:
-            step_status_key = f"task:{task_id}:step_statuses"
-            return self.redis_client.hgetall(step_status_key)
-        except RedisError as e:
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
-            logger.error(
-                f"Redis error fetching step statuses for {task_id}: {e}!\n{short_tb}",
+            data = self.redis_client.hgetall(key)
+            logger.info(
+                "[Redis] Retrieved all step statuses successfully",
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "task_id": task_id,
+                    "redis_key": key,
+                    "step_count": len(data),
+                },
+            )
+            return data
+        except RedisError as e:
+            logger.error(
+                "[Redis] Failed to fetch all step statuses",
+                exc_info=True,
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "redis_key": key,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
                 },
             )
             return {}
 
-    def get_step_ids(self, task_id: str) -> Dict[str, str]:
-        """Retrieve the IDs of all steps for a task from Redis.
-
-        Fetches all step IDs stored in a Redis hash for the given task ID.
-        Logs errors if the operation fails.
-
-        Args:
-            task_id (str): The ID of the task.
-
-        Returns:
-            Dict[str, str]: A dictionary mapping step names to their IDs, or empty dict if the operation fails.
-        """
+    def get_step_ids(self, task_id: str) -> dict[str, str]:
+        """Get all step IDs for a task."""
+        key = f"task:{task_id}:step_ids"
         try:
-            step_ids_key = f"task:{task_id}:step_ids"
-            return self.redis_client.hgetall(step_ids_key)
-        except RedisError as e:
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
-            logger.error(
-                f"Redis error fetching step IDs for {task_id}: {e}!\n{short_tb}",
+            data = self.redis_client.hgetall(key)
+            logger.info(
+                "[Redis] Retrieved all step IDs successfully",
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
+                    "log_type": LogType.ACCESS,
+                    "task_id": task_id,
+                    "redis_key": key,
+                    "step_count": len(data),
+                },
+            )
+            return data
+        except RedisError as e:
+            logger.error(
+                "[Redis] Failed to fetch step IDs",
+                exc_info=True,
+                extra={
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "redis_key": key,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
                 },
             )
             return {}
 
-    # === Store and retrieve workflow ID associated with a task === #
     def store_workflow_id(
         self, task_id: str, workflow_id: str, status: str, ttl: int = 3600
     ) -> bool:
-        """Store the workflow ID associated with a task in Redis.
-
-        Stores the workflow ID in Redis with a TTL and logs errors if the operation fails.
-
-        Args:
-            task_id (str): The ID of the task.
-            workflow_id (str): The ID of the workflow.
-            ttl (int, optional): Time-to-live for the Redis key in seconds. Defaults to 3600.
-
-        Returns:
-            bool: True if the operation succeeds, False otherwise.
-        """
-        logger.info(
-            f"Update WorkflowID: {workflow_id} for TaskID: {task_id} to Redis",
-            extra={
-                "service": ServiceLog.DATABASE,
-                "log_type": LogType.ACCESS,
-                **self.traceability_context_values,
-                "traceability": self.request_id,
-            },
-        )
+        """Store workflow_id and status with TTL."""
+        key = f"task:{task_id}:workflow_id"
         try:
-            key = f"task:{task_id}:workflow_id"
             self.redis_client.hset(key, workflow_id, status)
             self.redis_client.expire(key, ttl)
             logger.info(
-                f"Updated workflow status: {workflow_id} => {status} in Redis key {key}",
+                "[Redis] Stored workflow_id in Redis successfully",
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ACCESS,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "workflow_id": workflow_id,
+                    "status": status,
+                    "redis_key": key,
+                    "ttl_seconds": ttl,
                 },
             )
             return True
         except RedisError as e:
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
             logger.error(
-                f"Redis error while storing workflow ID for {task_id}: {e}!\n{short_tb}",
+                "[Redis] Failed to store workflow_id in Redis",
+                exc_info=True,
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "workflow_id": workflow_id,
+                    "status": status,
+                    "redis_key": key,
+                    "ttl_seconds": ttl,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
                 },
             )
             return False
 
-    def get_workflow_id(self, task_id: str) -> Optional[Dict[str, str]]:
-        """Retrieve the workflow ID associated with a task from Redis.
-
-        Fetches the workflow ID stored in Redis for the given task ID.
-        Logs errors if the operation fails.
-
-        Args:
-            task_id (str): The ID of the task.
-
-        Returns:
-            Optional[Dict[str, str]]: The workflow ID and its status,
-            or None if the operation fails or the key does not exist.
-        """
+    def get_workflow_id(self, task_id: str) -> dict[str, str] | None:
+        """Get workflow_id and status for a task."""
+        key = f"task:{task_id}:workflow_id"
         try:
-            key = f"task:{task_id}:workflow_id"
+            data = self.redis_client.hgetall(key)
+            if not data:
+                logger.info(
+                    "[Redis] No workflow_id found",
+                    extra={
+                        "service": ServiceLog.REDIS_SERVICE,
+                        "log_type": LogType.ACCESS,
+                        "task_id": task_id,
+                        "redis_key": key,
+                    },
+                )
+                return None
+            workflow_id, status = next(iter(data.items()))
             logger.info(
-                f"Find the workflow_id using task_id: {task_id}",
+                "[Redis] Retrieved workflow_id successfully",
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ACCESS,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "workflow_id": workflow_id,
+                    "status": status,
                 },
             )
-            hash_data = self.redis_client.hgetall(key)
-            if not hash_data:
-                return None
-
-            # Since only one item expected, get it:
-            workflow_id, status = next(iter(hash_data.items()))
             return {"workflow_id": workflow_id, "status": status}
         except RedisError as e:
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
             logger.error(
-                f"Redis error while fetching workflow ID for {task_id}: {e}!\n{short_tb}",
+                "[Redis] Failed to fetch workflow_id",
+                exc_info=True,
                 extra={
-                    "service": ServiceLog.DATABASE,
+                    "service": ServiceLog.REDIS_SERVICE,
                     "log_type": LogType.ERROR,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "task_id": task_id,
+                    "redis_key": key,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
                 },
             )
             return None
 
     def store_jwt_token(self, token: str, ttl: int) -> bool:
-        """
-        Store a JWT token in Redis with a specified time-to-live (TTL).
-
-        Args:
-            token: The JWT token to store.
-            ttl: Time-to-live in seconds for the token in Redis.
-
-        Returns:
-            bool: True if the token was stored successfully, False otherwise.
-        """
+        """Store JWT token with TTL."""
         try:
-            key = "jwt_token"
-            self.redis_client.set(key, token, ex=ttl)
-            logger.info("Updated JWT token to Redis")
+            self.redis_client.set("jwt_token", token, ex=ttl)
+            logger.info("[Redis] Stored JWT token successfully")
             return True
         except RedisError as e:
-            logger.error(f"Redis error while updating JWT token: {e}")
+            logger.error(f"[Redis] Failed to store JWT token: {e}")
             return False
 
-    def get_jwt_token(self) -> Optional[str]:
-        """
-        Retrieve a JWT token from Redis.
-
-        Returns:
-            Optional[str]: The JWT token if found, None otherwise.
-        """
+    def get_jwt_token(self) -> str | None:
+        """Retrieve JWT token from Redis."""
         try:
-            key = "jwt_token"
-            token = self.redis_client.get(key)
+            token = self.redis_client.get("jwt_token")
             if token:
-                logger.info("Found the JWT token from Redis")
-                return token
-            return None
+                logger.info("[Redis] Retrieved JWT token successfully")
+            return token
         except RedisError as e:
-            logger.error(f"Redis error while retrieving JWT token: {e}")
+            logger.error(f"[Redis] Failed to retrieve JWT token: {e}")
             return None

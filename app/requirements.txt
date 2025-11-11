@@ -1,4 +1,5 @@
 pytest==8.3.5
+pytest-mock
 pytest-cov==6.1.1
 pytest-asyncio
 celery==5.5.1

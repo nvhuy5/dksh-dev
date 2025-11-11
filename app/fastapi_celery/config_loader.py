@@ -38,3 +38,13 @@ def get_env_variable(key: str, fallback: Optional[Any] = None) -> Any:
         Any: The value of the environment variable, or the fallback value if not found.
     """
     return os.getenv(key, fallback)
+
+
+# === Load environment variables (once) ===
+ALLOW_TEST_SLEEP = str(get_env_variable("ALLOW_TEST_SLEEP", "False")).strip().lower() in ("True", "true", "1")
+SLEEP_DURATION = int(get_env_variable("SLEEP_DURATION", 0))
+
+# --- Celery dynamic config ---
+CELERY_RESULT_EXPIRES = int(get_env_variable("CELERY_RESULT_EXPIRES", 10800))
+CELERY_TASK_SOFT_TIME_LIMIT = int(get_env_variable("CELERY_TASK_SOFT_TIME_LIMIT", 7200))
+CELERY_TASK_TIME_LIMIT = int(get_env_variable("CELERY_TASK_TIME_LIMIT", 10800))

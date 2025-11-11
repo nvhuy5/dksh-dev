@@ -1,7 +1,7 @@
-# Third-Party Imports
 from celery import Celery
 import config_loader
-
+from config_loader import CELERY_RESULT_EXPIRES, CELERY_TASK_SOFT_TIME_LIMIT, CELERY_TASK_TIME_LIMIT
+# Create celery_app
 celery_app = Celery("File Processor")
 
 # Celery configuration
@@ -22,9 +22,9 @@ celery_app.conf.update(
     task_serializer="json",
     worker_prefetch_multiplier=3,
     task_acks_late=True,
-    result_expires=3600,
-    task_soft_time_limit=300,
-    task_time_limit=600,
+    result_expires=CELERY_RESULT_EXPIRES,
+    task_soft_time_limit=CELERY_TASK_SOFT_TIME_LIMIT,
+    task_time_limit=CELERY_TASK_TIME_LIMIT,
     task_default_retry_delay=5,
     task_max_retries=3,
     task_reject_on_worker_lost=True,
@@ -33,5 +33,3 @@ celery_app.conf.update(
     task_retry_backoff_max=30,
     task_retry_jitter=True,
 )
-
-celery_app.autodiscover_tasks(["celery_worker"])

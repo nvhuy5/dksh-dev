@@ -1,432 +1,428 @@
-import json
 import traceback
-import logging
 import asyncio
+from urllib.parse import urlparse
 from pydantic import BaseModel
-from template_processors.file_processor import FileProcessor, STEP_DEFINITIONS
-from template_processors.common import template_utils
-from models.class_models import WorkflowStep, StepDefinition, StatusEnum, StepOutput
-from models.traceability_models import ServiceLog, LogType, TraceabilityContextModel
-from typing import Dict, Any, Callable, Optional
+from utils.common_utils import get_step_name
+from connections.be_connection import BEConnector
+from processors.processor_nodes import PROCESS_DEFINITIONS
+from processors.processor_base import ProcessorBase
+from models.class_models import (
+    ApiUrl,
+    ContextData,
+    StepDetail,
+    WorkflowStep,
+    StepDefinition,
+    StatusEnum,
+    StepOutput,
+)
+from models.tracking_models import ServiceLog, LogType, TrackingModel
+from typing import Dict, Any, Callable, List, Optional, Union
 from utils import log_helpers
-import config_loader
-from utils.middlewares.request_context import get_context_value, set_context_values
-
-# ===
-# Set up logging
-logger_name = "Step Handler"
-log_helpers.logging_config(logger_name)
-base_logger = logging.getLogger(logger_name)
-
-# Wrap the base logger with the adapter
-logger = log_helpers.ValidatingLoggerAdapter(base_logger, {})
-# ===
 
 
-def get_model_dump_if_possible(obj: Any) -> dict | Any:
-    """
-    Returns the model dump dictionary from obj.output if both obj and obj.output are instances of BaseModel.
-    Otherwise, returns the original object.
-
-    Parameters:
-        obj (Any): Expected to be a BaseModel instance with an attribute 'output' also a BaseModel.
-
-    Returns:
-        dict: The result of obj.output.model_dump() if conditions are met.
-        Any: The original obj if conditions are not met.
-    """
-    if obj and isinstance(obj, BaseModel) and isinstance(obj.output, BaseModel):
-        return obj.output.model_dump()
-    return obj
-
-
-def raise_if_failed(result: BaseModel, step_name: str) -> None:
-    """
-    Raises RuntimeError if the result indicates failure.
-    """
-    if not isinstance(result, BaseModel):
-        return
-    if result.step_status != StatusEnum.FAILED:
-        return
-
-    logger.error(
-        f"step_status: {result.step_status}\nstep_failure_message: {result.step_failure_message}"
-    )
-    raise RuntimeError(
-        f"Step '{step_name}' failed to complete!\n{result.step_failure_message}"
-    )
-
-
-def has_args(step_config: StepDefinition) -> bool:
-    """
-    Check if the step configuration has non-empty 'args' attribute.
-
-    Args:
-        step_config (object): Step configuration object, expected to have 'args' attribute.
-
-    Returns:
-        bool: True if 'args' attribute exists and is non-empty, False otherwise.
-    """
-    return hasattr(step_config, "args") and step_config.args
-
-
-def resolve_args(step_config: StepDefinition, context: dict, step_name: str) -> tuple:
-    """
-    Resolve and prepare argument list for a step function based on step configuration and context.
-
-    Args:
-        step_config (object): Step configuration object with 'args' or 'data_input' attributes.
-        context (dict): Dictionary containing current context data.
-        step_name (str): Name of the step, used for logging.
-
-    Returns:
-        list: List of arguments to be passed to the step function.
-    """
-    args = []
-    kwargs = {}
-
-    if has_args(step_config):
-        args = [context[arg] for arg in step_config.args]
-        logger.info(f"[resolve_args] using args for {step_name}: {step_config.args}")
-        context["input_data"] = args[0] if len(args) == 1 else args
-    elif hasattr(step_config, "data_input") and step_config.data_input:
-        args = [context.get(step_config.data_input)]
-        logger.info(
-            f"[resolve_args] using args for {step_name}: {step_config.data_input}"
-        )
-
-    # === Keyword arguments
-    if hasattr(step_config, "kwargs") and step_config.kwargs:
-        kwargs = {
-            arg_name: (
-                context[arg_key]
-                if isinstance(arg_key, str) and arg_key in context
-                else arg_key
-            )
-            for arg_name, arg_key in step_config.kwargs.items()
-        }
-        logger.info(
-            f"[resolve_args] using keyword args for {step_name}: {json.dumps(kwargs, default=str)}"
-        )
-
-    return args, kwargs
-
-
-def extract_to_wrapper(
-    func: Callable[[Dict[str, Any], Dict[str, Any], str, str], None],
-) -> Callable[[Dict[str, Any], Dict[str, Any], str, str], None]:
-    """
-    Decorator that wraps a data extraction function with error handling and logging.
-
-    Args:
-        context (Dict[str, Any]): The shared context within the job.
-        result (Dict[str, Any]): The output data from the previous step.
-        ctx_key (str): The key to assign the value to in `context`.
-        result_key (str): The key to retrieve the value from in `result`.
-
-    Returns:
-        Callable: Wrapped function with exception handling and logging.
-    """
-
-    def wrapper(
-        context: Dict[str, Any], result: Dict[str, Any], ctx_key: str, result_key: str
-    ) -> None:
-        try:
-            request_id = get_context_value("request_id")
-            traceability_context_values = {
-                key: val
-                for key in [
-                    "file_path",
-                    "workflow_name",
-                    "workflow_id",
-                    "document_number",
-                    "document_type",
-                ]
-                if (val := get_context_value(key)) is not None
-            }
-            return func(context, result, ctx_key, result_key)
-        except Exception as e:
-            context[ctx_key] = None
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
-            logger.warning(
-                f"Failed to extract '{result_key}' to context['{ctx_key}']: {e}\n{short_tb}",
-                extra={
-                    "service": ServiceLog.DATA_TRANSFORM,
-                    "log_type": LogType.ERROR,
-                    **traceability_context_values,
-                    "traceability": request_id,
-                },
-            )
-
-    return wrapper
-
-
-@extract_to_wrapper
-def extract(
-    context: Dict[str, Any], result: Dict[str, Any], ctx_key: str, result_key: str
-) -> None:
-    """
-    Extracts a value from `result[result_key]` and assigns it to `context[ctx_key]`.
-
-    Returns:
-        None
-    """
-    context[ctx_key] = result[result_key]
+# === Set up logging ===
+logger = log_helpers.get_logger("Step Handler")
 
 
 # Suppress Cognitive Complexity warning due to step-specific business logic  # NOSONAR
-async def execute_step(
-    file_processor: FileProcessor,
-    step: WorkflowStep,
-    context: dict,
-    task_id: str,
-    rerun_attempt: Optional[int] = None,
-) -> StepOutput:
-    """
-    Execute a workflow step by calling the corresponding FileProcessor method.
-
-    Resolves arguments, runs the step (awaits if async), updates context with results,
-    extracts subfields, and saves materialized data to S3 if needed.
-
-    Args:
-        file_processor (FileProcessor): Handles file processing methods.
-        step (WorkflowStep): Metadata of the workflow step.
-        context (dict): Shared context data across steps.
-        task_id (str): Task identifier for logging and S3 keys.
-
-    Returns:
-        StepOutput: Result of the step execution, or None on error.
-    """
-    # ===
-    request_id = get_context_value("request_id") or task_id
-    traceability_context_values = {
-        key: val
-        for key in [
-            "file_path",
-            "workflow_name",
-            "workflow_id",
-            "document_number",
-            "document_type",
-        ]
-        if (val := get_context_value(key)) is not None
-    }
-    logger.debug(
-        f"Function: {__name__}\n"
-        f"RequestID: {request_id}\n"
-        f"TraceabilityContext: {traceability_context_values}"
-    )
-
-    step_name = step.stepName
-
-    # === Check if this step has already been completed in S3 ===
-    step_config = STEP_DEFINITIONS.get(step_name)
-    if not step_config:
-        raise ValueError(f"No step configuration found for step '{step_name}'.")
-
-    already_done = False  
-    step_result_in_s3 = file_processor.check_step_result_exists_in_s3(
-        task_id=task_id,
-        step_name=step.stepName,
-        rerun_attempt=rerun_attempt,
-    )
-    if step_result_in_s3:
-        if hasattr(step_result_in_s3, "step_status"):
-            # MasterDataParsed has step_status
-            already_done = step_result_in_s3.step_status == "1"
-        else:
-            # PODataParsed does not have step_status
-            already_done = False
-
-    logger.info(
-        f"Step '{step.stepName}' already_done: {already_done}, "
-        f"step_result_in_s3: {step_result_in_s3}"
-    )
-    if already_done:
-        if step_config.store_materialized_data:
-            materialized_step_data_loc = config_loader.get_config_value(
-                "s3_buckets", "materialized_step_data_loc"
-            )
-            s3_key_prefix = f"{materialized_step_data_loc}/{task_id}/{step_name}"
-            context["materialized_step_data_loc"] = s3_key_prefix
-
-        logger.info(
-            f"[SKIP] Step '{step.stepName}' already has materialized data in S3. Skipping execution.",
-            extra={
-                "service": ServiceLog.DATA_TRANSFORM,
-                "log_type": LogType.TASK,
-                "traceability": task_id,
-                **traceability_context_values,
-            },
-        )
-
-        # Save output
-        output_key = step_config.data_output
-        if output_key:
-            step_output_data = StepOutput(
-                output=template_utils.parse_data(
-                    file_processor.document_type, data=step_result_in_s3
-                ),
-                step_status=StatusEnum.SUCCESS,
-                step_failure_message=None,
-            )
-            context[output_key] = step_output_data
-            return step_output_data
-        else:
-            return
-
-    logger.info(
-        f"Executing step: {step_name}, already_done: {already_done}"
-        + (f" | Rerun attempt: {rerun_attempt}" if rerun_attempt is not None else ""),
-        extra={
-            "service": ServiceLog.DATA_TRANSFORM,
-            "log_type": LogType.TASK,
-            **traceability_context_values,
-            "traceability": task_id,
-        },
-    )
-
+async def execute_step(file_processor: ProcessorBase, context_data: ContextData, full_sorted_steps: list[WorkflowStep], step: WorkflowStep) -> StepOutput:  # NOSONAR
     try:
-        step_config = STEP_DEFINITIONS.get(step_name)
+        logger.info(f"Starting execute step: [{step.stepName}]")
+        step_name = get_step_name(step.stepName)
+        step_config = PROCESS_DEFINITIONS.get(step_name)
+        
         if not step_config:
-            raise ValueError(f"No step configuration found for step '{step_name}'.")
+            raise NotImplementedError(f"The step [{step_name or step.stepName}] is not yet defined")
+        
+        prev_order = 0
+        prev_step = None
+        if step.stepOrder > 0:
+            prev_order = step.stepOrder - 1
+            prev_step = next((s for s in full_sorted_steps if s.stepOrder == prev_order), None)
+        
+        if getattr(file_processor.tracking_model, "rerun_step_id", None):
+            if str(step.workflowStepId) == str(file_processor.tracking_model.rerun_step_id):
+                if prev_step:
+                    prev_result = file_processor.get_step_result_from_s3(step=prev_step)
+                    if prev_result:
+                        key_name = step_config.data_input
+                        step_output = StepOutput(
+                            data=prev_result,
+                            sub_data={}, 
+                            step_status=StatusEnum.SUCCESS,
+                            step_failure_message=None,
+                        )
+                        if key_name:
+                            context_data.processing_steps[key_name] = step_output
+                    else:
+                        logger.info(f"Not found data for previous step [{prev_step.stepName}]")
+                else:
+                    logger.info("First step - No need to load previous step")
 
-        method_name = step_config.function_name
-        method = getattr(file_processor, method_name, None)
-
-        if method is None or not callable(method):
-            raise AttributeError(
-                f"Function '{method_name}' not found in FileProcessor."
-            )
-
-        # Resolve args
-        args, kwargs = resolve_args(step_config, context, step_name)
-        log_for_args = (
-            json.dumps(step_config.args, default=str)
-            if step_config.args
-            else step_config.data_input
-        )
-        logger.info(
-            (
-                f"Calling {method_name} with args: {log_for_args} - kwargs: {json.dumps(kwargs, default=str)}"
-                if log_for_args
-                else f"Calling {method_name} with no args provided!"
-            ),
-            extra={
-                "service": ServiceLog.DATA_TRANSFORM,
-                "log_type": LogType.TASK,
-                **traceability_context_values,
-                "traceability": task_id,
-            },
-        )
-
-        # Call method (await if coroutine)
-        call_kwargs = kwargs or {}
-        result = (
-            await method(*args, **call_kwargs)
-            if asyncio.iscoroutinefunction(method)
-            else method(*args, **call_kwargs)
+        result_ctx_api = get_context_api(step_name)
+        ctxs = result_ctx_api["ctxs"]
+        required_keys = result_ctx_api["required_keys"]
+        required_keys = fill_required_keys_for_request(
+            required=required_keys,
+            file_record=file_processor.file_record,
+            step=step,
+            processing_steps=context_data.processing_steps,
         )
 
-        # === Try to retrieve all traceability attributes again
-        traceability_context_values = {
-            key: val
-            for key in [
-                "file_path",
-                "workflow_name",
-                "workflow_id",
-                "document_number",
-                "document_type",
-            ]
-            if (val := get_context_value(key)) is not None
-        }
-        logger.debug(
-            f"Finish step {step_name} updates...\n"
-            f"Function: {__name__}\n"
-            f"RequestID: {request_id}\n"
-            f"TraceabilityContext: {traceability_context_values}"
-        )
+        ctx_api_records = []
+        response = None
+        if not result_ctx_api:
+            logger.warning(f"There is no API context for this step: {step_name}")
+        else:
+            for ctx in ctxs:
+                url = ctx["url"](required_keys) if callable(ctx["url"]) else ctx["url"]
+                method = ctx["method"]
+                params = (
+                    ctx["params"](required_keys)
+                    if callable(ctx["params"])
+                    else ctx["params"]
+                )
+                body = ctx["body"](required_keys) if callable(ctx["body"]) else ctx["body"]
+                
+                if not url:
+                    result = await run_function(file_processor=file_processor, 
+                                    context_data=context_data, 
+                                    response=response, 
+                                    step=step,
+                                    step_config=step_config, 
+                                    func_name=method)
+                    if "extract" in ctx:
+                        ctx["extract"](result, required_keys)
+                    
+                else:
+                    connector = BEConnector(api_url=url, body_data=body, params=params)
+                    response = await (connector.get() if method == "get" else connector.post())
 
-        logger.info(
-            f"Step '{step_name}' executed successfully.",
-            extra={
-                "service": ServiceLog.DATA_TRANSFORM,
-                "log_type": LogType.TASK,
-                **traceability_context_values,
-                "traceability": task_id,
-            },
-        )
+                    if "extract" in ctx:
+                        ctx["extract"](response, required_keys)
 
-        # Save output
-        output_key = step_config.data_output
-        if output_key:
-            context[output_key] = result
+                    parsed_url = urlparse(url)
+                    short_url = parsed_url.path
 
-        # Extract specific subfields into context for further usage
-        extract_map = step_config.extract_to or {}
-        logger.info(f"Extracted map for further usage: {extract_map}")
+                    ctx_api_records.append(
+                        {
+                            "url": short_url,
+                            "method": method.upper(),
+                            "request": {"params": params, "body": body},
+                            "response": response,
+                        }
+                    )
 
-        # === Step 1: Filter and publish only valid traceability keys ===
-        valid_keys = TraceabilityContextModel.model_fields.keys()
-        result_dump = get_model_dump_if_possible(result)
-        filtered_context_data = {
-            ctx_key: result_dump[result_key]
-            for ctx_key, result_key in extract_map.items()
-            if ctx_key in valid_keys and result_key in result_dump
-        }
-        set_context_values(**filtered_context_data)
+        context_data.step_detail[step.stepOrder].config_api = ctx_api_records
 
-        # === Step 2: Refresh context values ===
-        traceability_context_values = {
-            key: val
-            for key in [
-                "file_path",
-                "workflow_name",
-                "workflow_id",
-                "document_number",
-                "document_type",
-            ]
-            if (val := get_context_value(key)) is not None
-        }
-        logger.debug(
-            f"Update extract_to attribute...\n"
-            f"Function: {__name__}\n"
-            f"RequestID: {request_id}\n"
-            f"TraceabilityContext: {traceability_context_values}"
-        )
-
-        # === Step 3: Attempt to extract all values into `context` ===
-        for ctx_key, result_key in extract_map.items():
-            extract(context, result_dump, ctx_key, result_key)
+        result = await run_function(file_processor=file_processor, 
+                                    context_data=context_data, 
+                                    response=response, 
+                                    step=step,
+                                    step_config=step_config, 
+                                    func_name=None)
 
         return result
 
-    except AttributeError as e:
-        short_tb = "".join(
-            traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-        )
-        logger.error(
-            f"[Missing step]: {str(e)}!\n{short_tb}",
-            extra={
-                "service": ServiceLog.DATA_TRANSFORM,
-                "log_type": LogType.ERROR,
-                **traceability_context_values,
-                "traceability": task_id,
-            },
-        )
-        raise
     except Exception as e:
-        short_tb = "".join(
-            traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-        )
+        full_tb = traceback.format_exception(type(e), e, e.__traceback__)
         logger.exception(
-            f"Exception during step '{step_name}': {str(e)}!\n{short_tb}",
+            f"Error occurred while executing step '{step_name}': {e}",
             extra={
-                "service": ServiceLog.DATA_TRANSFORM,
+                "service": ServiceLog.STEP_EXECUTION,
                 "log_type": LogType.ERROR,
-                **traceability_context_values,
-                "traceability": task_id,
+                "data": file_processor.tracking_model,
+                "traceback": full_tb,
             },
         )
-        raise
+        return StepOutput(
+            data=None,
+            sub_data={},
+            step_status=StatusEnum.FAILED,
+            step_failure_message=[str(e)],
+        )
+
+
+
+def get_context_api(step_name: str) -> dict[str, Any] | None:
+
+    step_name_upper = step_name.upper()
+    step_map = {
+        "FILE_PARSE": [
+            {
+                "url": ApiUrl.WORKFLOW_TEMPLATE_PARSE.full_url(),
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda ctx: {"workflowStepId": ctx["workflowStepId"]},
+                "body": None,
+            }
+        ],
+        "VALIDATE_HEADER": [
+            {
+                "url": ApiUrl.MASTERDATA_HEADER_VALIDATION.full_url(),
+                "method": "get",
+                "required_context": ["file_name"],
+                "params": lambda ctx: {"fileName": ctx["file_name"]},
+                "body": None,
+            }
+        ],
+        "VALIDATE_DATA": [
+            {
+                "url": ApiUrl.MASTERDATA_COLUMN_VALIDATION.full_url(),
+                "method": "get",
+                "required_context": ["file_name"],
+                "params": lambda ctx: {"fileName": ctx["file_name"]},
+                "body": None,
+            }
+        ],
+        "MASTER_DATA_LOAD": [
+            {
+                "url": ApiUrl.MASTER_DATA_LOAD_DATA.full_url(),
+                "method": "post",
+                "required_context": ["file_name_wo_ext", "items"],
+                "params": None,
+                "body": lambda ctx: {
+                    "fileName": ctx["file_name_wo_ext"],
+                    "data": ctx["items"],
+                },
+            }
+        ],
+        "TEMPLATE_FORMAT_VALIDATION": [
+            {
+                "url": ApiUrl.WORKFLOW_TEMPLATE_PARSE.full_url(),
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda ctx: {"workflowStepId": ctx["workflowStepId"]},
+                "body": None,
+                "extract": lambda resp, ctx: ctx.update(
+                    {"templateFileParseId": resp[0]["templateFileParse"]["id"]}
+                ),
+            },
+            {
+                "url": lambda ctx: f"{ApiUrl.TEMPLATE_FORMAT_VALIDATION.full_url()}/{ctx['templateFileParseId']}",
+                "method": "get",
+                "required_context": ["templateFileParseId"],
+                "params": lambda _: {},
+                "body": None,
+            },
+        ],
+        "TEMPLATE_DATA_MAPPING": [
+            {
+                "url": ApiUrl.WORKFLOW_TEMPLATE_PARSE.full_url(),
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda ctx: {"workflowStepId": ctx["workflowStepId"]},
+                "body": None,
+                "extract": lambda resp, ctx: ctx.update(
+                    {"templateFileParseId": resp[0]["templateFileParse"]["id"]}
+                ),
+            },
+            {
+                "url": lambda ctx: f"{ApiUrl.DATA_MAPPING.full_url()}?templateFileParseId={ctx['templateFileParseId']}",
+                "method": "get",
+                "required_context": ["templateFileParseId"],
+                "params": lambda ctx: {
+                    "templateFileParseId": ctx["templateFileParseId"]
+                },
+                "body": None,
+            },
+        ],
+        "TEMPLATE_PUBLISH_DATA": [
+            {
+                "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda _: {},
+                "body": None,
+                "extract": lambda resp, ctx: ctx.update(
+                    {"connectionId": resp["connectionDto"]["id"]}
+                ),
+            },
+            {
+                "url": None,
+                "method": "copy_file",
+                "required_context": ["fileOutputLink"],
+                "params": None,
+                "body": None,
+                "extract": lambda result, ctx: ctx.update(
+                    {"fileOutputLink": result["fileOutputLink"]}
+                ),
+            },
+            {
+                "url": ApiUrl.TEMPLATE_PUBLISH_DATA.full_url(),
+                "method": "post",
+                "required_context": ["connectionId", "fileOutputLink"],
+                "params": None,
+                "body": lambda ctx: {
+                    "connectionId": ctx["connectionId"],
+                    "fileOutputLink": ctx["fileOutputLink"],
+                }
+            }
+        ],
+        "METADATA_EXTRACT": [
+            {
+                "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda _: {},
+                "body": None,
+            }
+        ],
+        "XSL_TRANSLATION": [
+            {
+                "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda _: {},
+                "body": None,
+            }
+        ],
+        "SUBMIT": [
+            {
+                "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda _: {},
+                "body": None,
+            }
+        ],
+        "SEND_TO": [
+            {
+                "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda _: {},
+                "body": None,
+            }
+        ],
+        "RENAME": [
+            {
+                "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params":  lambda _: {},
+                "body": None,
+            }
+        ],
+    }
+
+    for key, ctxs in step_map.items():
+        if key in step_name_upper:
+            required_keys = {
+                key: None for ctx in ctxs for key in ctx.get("required_context", [])
+            }
+            return {
+                "ctxs": ctxs,
+                "required_keys": required_keys,
+            }
+
+    return None
+
+
+def fill_required_keys_for_request(
+    required: Dict[str, Any],
+    file_record: Dict[str, Any],
+    step: BaseModel,
+    processing_steps: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Fill required fields with values from file_record, step, and processing_steps.
+    Priority: file_record > step > processing_steps.
+    """
+    # Convert Pydantic model to dict
+    step_data = step.model_dump()
+    
+    for key in required.keys():
+        if key in file_record:
+            required[key] = file_record[key]
+        elif key in step_data:
+            required[key] = step_data[key]
+        else:
+            for _, step_info in processing_steps.items():
+                if key in step_info:
+                    required[key] = step_info[key]
+                    break
+                elif hasattr(step_info, "data"):
+                    data = step_info.data
+                    if hasattr(data,key):
+                        required[key] = getattr(data,key)
+                        break 
+    return required
+
+
+def fill_required_keys_from_response(
+    response: Union[Dict[str, Any], List[Dict[str, Any]]], required: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Fill values from response into required
+
+    Args:
+        response: API response (dict or list of dicts).
+        required: Dict with keys to fill (values may be None).
+
+    Returns:
+        Updated dict with matched keys filled from response.
+    """
+    if isinstance(response, dict):
+        # Directly map keys from dict response
+        for key, value in response.items():
+            if key in required and not required[key]:
+                    required[key] = value
+    elif isinstance(response, list):
+        # Iterate all dicts in list, overwrite if key repeats
+        for item in response:
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    if key in required and not required[key]:
+                            required[key] = value
+
+    return required
+
+
+async def run_function(
+    file_processor: ProcessorBase, 
+    context_data: ContextData, 
+    response: Any, 
+    step: WorkflowStep,
+    step_config: StepDefinition | None, 
+    func_name: str | None) -> Any:
+    """
+    Execute a target function from the given file processor (sync or async).
+
+    The function name is resolved from `func_name` or `step_config.function_name`.
+    Input data is fetched from `context_data.processing_steps` based on 
+    `step_config.data_input`, and the result is stored back using `data_output`.
+
+    Raises:
+        AttributeError: If the target function is not found or not callable.
+
+    Returns:
+        Any: The result produced by the executed function.
+    """
+    if not func_name:
+        func_name = step_config.function_name
+    function = getattr(file_processor, func_name, None)
+
+    if function is None or not callable(function):
+        raise AttributeError(f"Function '{func_name}' not found in FileProcessor.")
+
+    args = []
+    kwargs = fill_required_keys_from_response(response, step_config.kwargs)
+    data_input = (
+        context_data.processing_steps.get(step_config.data_input)
+        if getattr(step_config, "data_input", None)
+        else None
+    )
+
+    kwargs["step"] = step
+    result = (
+        await function(data_input, response, *args, **kwargs)
+        if asyncio.iscoroutinefunction(function)
+        else function(data_input, response, *args, **kwargs)
+    )
+
+    key_name = step_config.data_output
+    if key_name:
+        context_data.processing_steps[key_name] = result
+
+    return result

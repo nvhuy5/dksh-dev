@@ -1,6 +1,9 @@
 image: python:3.13-alpine3.21
 
 definitions:
+  services:
+      docker:
+          memory: 2048
   caches:
     sonar: ~/.sonar/cache
   steps:

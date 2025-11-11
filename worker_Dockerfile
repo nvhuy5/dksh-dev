@@ -15,11 +15,8 @@ ENV CELERY_MAX_TASKS_PER_CHILD=100
 ENV CELERY_MAX_MEMORY_PER_CHILD=2000000
 ENV ARG_ENV=$ARG_ENV
 
-RUN apk update && apk add --no-cache bash dos2unix curl ca-certificates
-COPY ./tma-ADCA-CA.crt /usr/local/share/ca-certificates/tma-ADCA-CA.crt
-RUN update-ca-certificates
 
-# RUN apk update && apk add --no-cache bash dos2unix curl
+RUN apk update && apk add --no-cache bash dos2unix curl
 RUN curl -k -o /usr/local/bin/wait-for-it https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh \
     && chmod +x /usr/local/bin/wait-for-it
 

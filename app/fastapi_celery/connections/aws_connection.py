@@ -1,29 +1,17 @@
-# Standard Library Imports
-from utils import log_helpers
-import logging
 import json
+from utils import log_helpers
 from typing import Optional
-
-# Third-Party Imports
 import traceback
 import boto3
 from botocore.exceptions import ClientError
 import config_loader
-from models.traceability_models import ServiceLog, LogType
-from utils.middlewares.request_context import get_context_value
+from models.tracking_models import ServiceLog, LogType
 
-# ===
+# === Set up logging ===
+logger = log_helpers.get_logger("AWS Connection")
 
+# === Environment setup ===
 aws_region = config_loader.get_env_variable("s3_buckets", "default_region")
-
-# Logging Setup
-logger_name = "AWS Connection"
-log_helpers.logging_config(logger_name)
-base_logger = logging.getLogger(logger_name)
-
-# Wrap the base logger with the adapter
-logger = log_helpers.ValidatingLoggerAdapter(base_logger, {})
-
 
 # === S3 Connector using boto3 ===
 class S3Connector:
@@ -40,24 +28,6 @@ class S3Connector:
             bucket_name (str): Name of the S3 bucket to connect to.
             region_name (str, optional): AWS region name. Defaults to 'ap-southeast-1' if not specified.
         """
-        # === Try to retrieve all traceability attributes when an object created
-        self.request_id = get_context_value("request_id")
-        self.traceability_context_values = {
-            key: val
-            for key in [
-                "file_path",
-                "workflow_name",
-                "workflow_id",
-                "document_number",
-                "document_type",
-            ]
-            if (val := get_context_value(key)) is not None
-        }
-        logger.debug(
-            f"Function: {__name__}\n"
-            f"RequestID: {self.request_id}\n"
-            f"TraceabilityContext: {self.traceability_context_values}"
-        )
 
         self.bucket_name = bucket_name.strip()
         self.region_name = (
@@ -87,8 +57,6 @@ class S3Connector:
                 extra={
                     "service": ServiceLog.FILE_STORAGE,
                     "log_type": LogType.ACCESS,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
                 },
             )
         except ClientError as e:
@@ -99,22 +67,17 @@ class S3Connector:
                     extra={
                         "service": ServiceLog.FILE_STORAGE,
                         "log_type": LogType.ERROR,
-                        **self.traceability_context_values,
-                        "traceability": self.request_id,
                     },
                 )
                 self._create_bucket()
             else:
-                short_tb = "".join(
-                    traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-                )
+                full_tb = traceback.format_exception(type(e), e, e.__traceback__)
                 logger.error(
-                    f"Error checking bucket '{self.bucket_name}': {type(e).__name__} - {e}\n{short_tb}",
+                    f"Error checking bucket '{self.bucket_name}': {type(e).__name__} - {e}\n",
                     extra={
                         "service": ServiceLog.FILE_STORAGE,
                         "log_type": LogType.ERROR,
-                        **self.traceability_context_values,
-                        "traceability": self.request_id,
+                        "traceback": full_tb,
                     },
                 )
                 raise
@@ -142,21 +105,16 @@ class S3Connector:
                 extra={
                     "service": ServiceLog.FILE_STORAGE,
                     "log_type": LogType.ACCESS,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
                 },
             )
         except ClientError as e:
-            short_tb = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__, limit=3)
-            )
+            full_tb = traceback.format_exception(type(e), e, e.__traceback__)
             logger.error(
-                f"Error creating bucket '{self.bucket_name}': {type(e).__name__} - {e}\n{short_tb}",
+                f"Error creating bucket '{self.bucket_name}': {type(e).__name__} - {e}\n",
                 extra={
                     "service": ServiceLog.FILE_STORAGE,
                     "log_type": LogType.ERROR,
-                    **self.traceability_context_values,
-                    "traceability": self.request_id,
+                    "traceback": full_tb,
                 },
             )
             raise
@@ -208,9 +166,7 @@ class AWSSecretsManager:
             if error_code == "ResourceNotFoundException":
                 logger.error(f"Secret not found. - error code: {error_code}")
             else:
-                logger.error(
-                    f"ClientError retrieving secret '{secret_name}': {error_code} - {e}"
-                )
+                logger.error(f"ClientError retrieving secret '{secret_name}': {error_code} - {e}")
         except Exception as e:
             logger.error(f"Error retrieving secret: {e} - {traceback.format_exc()}")
 

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from pydantic import BaseModel, model_validator
+from typing import Any
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from enum import Enum
 import config_loader
 from urllib.parse import urljoin
@@ -9,19 +9,14 @@ from urllib.parse import urljoin
 
 # === Source Type Enum ===
 class SourceType(str, Enum):
-    """Enum representing the source type of data.
-
-    Attributes:
-        LOCAL (str): Indicates a local file source.
-        S3 (str): Indicates an S3 bucket source.
-    """
+    """Type of data source."""
 
     LOCAL = "local"
     S3 = "s3"
 
 
 class Environment(str, Enum):
-    """Present the all supported environments"""
+    """Supported environments."""
 
     PROD = "prod"
     PREPROD = "preprod"
@@ -34,43 +29,29 @@ class Environment(str, Enum):
 
 
 class DocumentType(str, Enum):
-    """Enum representing the type of document.
-
-    Attributes:
-        MASTER_DATA (str): Indicates a master data document.
-        ORDER (str): Indicates an order document.
-    """
+    """Type of document being processed."""
 
     MASTER_DATA = "master_data"
     ORDER = "order"
 
 
 class StatusEnum(str, Enum):
-    """Enum representing the status of a workflow step.
-
-    Attributes:
-        SUCCESS (str): Indicates the step completed successfully.
-        FAILED (str): Indicates the step failed.
-        SKIPPED (str): Indicates the step was skipped.
-        PROCESSING (str): Indicates the step is currently processing.
-    """
+    """Status of a workflow step."""
 
     SUCCESS = "1"
     FAILED = "2"
-    SKIPPED = "3"
+    CANCEL = "3"
     PROCESSING = "4"
+    
+    def __str__(self):
+        return self.name
+
+    def __repr__(self):
+        return self.name
 
 
 class ApiUrl(str, Enum):
-    """Enum representing API endpoint URLs.
-
-    Attributes:
-        workflow_filter (str): URL for filtering workflows.
-        workflow_session_start (str): URL for starting a workflow session.
-        workflow_session_finish (str): URL for finishing a workflow session.
-        workflow_step_start (str): URL for starting a workflow step.
-        workflow_step_finish (str): URL for finishing a workflow step.
-    """
+    """API endpoint paths used in workflow processing."""
 
     WORKFLOW_FILTER = "/api/workflow/filter"
     WORKFLOW_SESSION_START = "/api/workflow/session/start"
@@ -84,6 +65,8 @@ class ApiUrl(str, Enum):
     TEMPLATE_FORMAT_VALIDATION = "/api/template/format-validation"
     MASTER_DATA_LOAD_DATA = "/api/data-sync-record/sync-data"
     DATA_MAPPING = "/api/data-mapping"
+    WORKFLOW_STEP = "/api/workflow/step"
+    TEMPLATE_PUBLISH_DATA = "/api/workflow/publish-data"
 
     def full_url(self) -> str:
         env = Environment(config_loader.get_env_variable("ENVIRONMENT", "prod").lower())
@@ -100,96 +83,63 @@ class ApiUrl(str, Enum):
 
 
 class StopTaskRequest(BaseModel):
-    """Pydantic model for stopping a task request.
-
-    Attributes:
-        task_id (str): The ID of the task to stop.
-        reason (str | None): The reason for stopping the task, optional.
-    """
+    """Request payload to stop a task."""
 
     task_id: str
     reason: str | None = None
 
 
 class FilePathRequest(BaseModel):
-    """
-    Pydantic model for the /file/process request payload.
-
-    Attributes:
-        file_path (str): Required. The absolute or relative path to the file to be processed.
-        celery_id (Optional[str]): Optional. A specific task identifier to use for reruns.
-            If not provided, a new UUID will be generated automatically.
-        rerun_attempt (Optional[int]): Optional. Indicates which rerun attempt this is (e.g., 1, 2, 3...).
-            Used to distinguish and version rerun outputs in S3.
-    """
+    """Payload for /file/process API."""
 
     file_path: str
     project: str
     source: str
-    celery_id: Optional[str] = None
-    rerun_attempt: Optional[int] = None
+    celery_id: str | None = None
+    rerun_attempt: int | None = None
+    rerun_step_id: str | None = None
 
 
 class WorkflowStep(BaseModel):
-    """Pydantic model representing a workflow step.
-
-    Attributes:
-        workflowStepId (str): The unique ID of the workflow step.
-        stepName (str): The name of the step.
-        stepOrder (int): The order of the step in the workflow.
-        stepConfiguration (List[dict]): Configuration details for the step, default empty list.
-    """
+    """Represents a step in the workflow."""
 
     workflowStepId: str
     stepName: str
     stepOrder: int
-    stepConfiguration: List[dict] = []
+    stepConfiguration: list[dict] = Field(default_factory=list)
 
 
 class WorkflowModel(BaseModel):
-    """Pydantic model representing a workflow.
-
-    Attributes:
-        id (str): The unique ID of the workflow.
-        name (str): The name of the workflow.
-        workflowSteps (List[WorkflowStep]): List of steps in the workflow.
-    """
+    """Represents a workflow structure."""
 
     id: str
-    name: str
-    workflowSteps: List[WorkflowStep]
-    sapMasterData: Optional[bool] = None
+    name: str | None = None
+    status: str | None = None
+    isMasterDataWorkflow: bool | None = None
+    sapMasterData: bool | None = None
+    customerId: str | None = None
+    folderName: str | None = None
+    flowId: str | None = None
+    customerFolderName: str | None = None
+    workflowSteps: list[WorkflowStep]
 
 
 class WorkflowSession(BaseModel):
-    """Pydantic model representing a workflow session.
-
-    Attributes:
-        id (str): The unique ID of the workflow session.
-        status (str): The status of the workflow session.
-    """
+    """Represents a workflow session."""
 
     id: str
     status: str
 
 
 class StartStep(BaseModel):
-    """Pydantic model for starting a workflow step.
-
-    Attributes:
-        workflowHistoryId (str): The ID of the workflow history.
-        status (str): The initial status of the step.
-    """
+    """Request model for starting a workflow step."""
 
     workflowHistoryId: str
     status: str
 
 
 class PathEncoder(json.JSONEncoder):  # pragma: no cover  # NOSONAR
-    """Custom JSON encoder for serializing Path objects.
-
-    Extends json.JSONEncoder to handle Path objects by converting them to POSIX strings.
-    """
+    """JSON encoder for Path objects."""
 
     def default(self, obj):
         if isinstance(obj, Path):
@@ -198,100 +148,139 @@ class PathEncoder(json.JSONEncoder):  # pragma: no cover  # NOSONAR
 
 
 class StepDefinition(BaseModel):  # pragma: no cover  # NOSONAR
-    """Pydantic model representing a step definition.
-
-    Attributes:
-        function_name (str): The name of the function to execute.
-        data_input (Optional[str]): The input data key, optional.
-        data_output (Optional[str]): The output data key, optional.
-        store_materialized_data (bool): Flag to store materialized data, defaults to False.
-        extract_to (Dict[str, str]): Mapping of keys to extract data to, defaults to empty dict.
-        args (Optional[List[str]]): List of argument names, optional.
-
-    Raises:
-        ValueError: If 'store_materialized_data' is True but 'data_output' is not set.
-    """
+    """Defines a single step function configuration."""
 
     function_name: str
-    data_input: Optional[str] = None
-    data_output: Optional[str] = None
-    store_materialized_data: bool = False
-    extract_to: Dict[str, str] = {}
-    args: Optional[List[str]] = None
-    kwargs: Optional[Dict[str, Any]] = None
+    data_input: str | None = None
+    data_output: str | None = None
+    require_data_api: bool = False
+    require_data_output: bool = False
+    target_store_data: str | None = None
+    args: list[str] = Field(default_factory=list)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    extract_to: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_constraints(cls, values):
-        if values.store_materialized_data and not values.data_output:
+        if values.require_data_output and not values.data_output:
             raise ValueError(
-                "'store_materialized_data' requires 'data_output' to be set"
+                "Invalid config: 'data_output' is required when 'require_data_output' is True."
             )
         return values
 
 
 class StepOutput(BaseModel):
-    output: Any
-    step_status: Optional[StatusEnum]
-    step_failure_message: Optional[List[str]]
+    """Output data returned from a workflow step."""
+    
+    model_config = ConfigDict(use_enum_values=False)
+
+    data: Any | None = None
+    sub_data: dict[str, Any] = Field(default_factory=dict)
+    step_status: StatusEnum | None = None
+    step_failure_message: list[str] | None = None
+      
 
 
 class MasterDataParsed(BaseModel):
-    """Represents the output structure for processed master data.
+    """Represents processed master data output."""
 
-    Attributes:
-        original_file_path (Path): Path to the original input file.
-        headers (List[str]): List of column headers extracted from the file.
-        document_type (DocumentType): Type of the document being processed.
-        items (List[Dict[str, Any]]): Parsed data items from the document, represented as a list of dictionaries.
-        step_status (Optional[StatusEnum]): Current processing status of the step (e.g., success, failure).
-        message (Optional[str]): Additional information or error message from processing.
-        capacity (str): Indicates the capacity or data volume context of the document.
-    """
-
+    model_config = ConfigDict(
+        extra="allow",
+        use_enum_values=False
+    )
+    
     original_file_path: Path
-    headers: List[str] | Dict[str, Any]
+    headers: list[str] | dict[str, Any]
     document_type: DocumentType
-    items: List[Dict[str, Any]] | Dict[str, Any]
-    step_status: Optional[StatusEnum]
-    messages: Optional[List[str]] = None
+    items: list[dict[str, Any]] | dict[str, Any]
+    step_status: StatusEnum | None
+    messages: list[str] | None = None
     capacity: str
-    step_detail: Optional[List[Dict[str, Any]]] = None
-    workflow_detail: Optional[Dict[str, Any]] = None
-    json_output: Optional[str] = None
+    step_detail: list[dict[str, Any]] | None = None
+    workflow_detail: dict[str, Any] | None = None
+    json_output: str | None = None
 
     def __repr__(self) -> str:
-        return self.model_dump_json(indent=2, exclude_none=True)
+        return self.model_dump_json(indent=2, exclude_none=True, mode="json")
 
 
 class GenericStepResult(BaseModel):
+    """Simple model for generic step results."""
+
     step_status: str
-    message: Optional[str] = None
+    message: str | None = None
 
 
 class PODataParsed(BaseModel):
-    """
-    Represents the parsed content of a purchase order (PO) document.
+    """Represents parsed Purchase Order (PO) document data."""
 
-    Attributes:
-        original_file_path (Path): The path to the original PO file.
-        document_type (DocumentType): The type of document, expected to be 'order' for PO files.
-        po_number (str): The unique purchase order number extracted from the document.
-        items (List[Dict[str, Any]]): The list of item entries parsed from the PO, each represented as a dictionary.
-        metadata (Optional[Dict[str, str]]): Optional metadata extracted from the document.
-        capacity (str): Indicates the data volume or context of the PO (e.g., 'full', 'partial').
-    """
+    model_config = ConfigDict(
+        extra="allow",
+        use_enum_values=False
+    )
 
     original_file_path: Path
     document_type: DocumentType
-    po_number: Optional[str]
-    items: List[Dict[str, Any]] | Dict[str, Any]
-    metadata: Optional[Dict[str, str]]
-    step_status: Optional[StatusEnum]
-    messages: Optional[List[str]] = None
+    po_number: str | None
+    items: list[dict[str, Any]] | dict[str, Any]
+    metadata: dict[str, str] | None
+    step_status: StatusEnum | None
+    messages: list[str] | None = None
     capacity: str
-    step_detail: Optional[List[Dict[str, Any]]] = None
-    workflow_detail: Optional[Dict[str, Any]] = None
-    json_output: Optional[str] = None
+    step_detail: list[dict[str, Any]] | None = None
+    workflow_detail: dict[str, Any] | None = None
+    json_output: str | None = None
+    file_output: str | None = None
 
     def __repr__(self) -> str:
-        return self.model_dump_json(indent=2, exclude_none=True)
+        return self.model_dump_json(indent=2, exclude_none=True, mode="json")
+
+
+class ApiConfig(BaseModel):
+    """Configuration for an API call."""
+
+    url: str | None = None
+    method: str | None = None
+    request: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+
+
+class SessionConfig(BaseModel):
+    """Workflow session API configurations."""
+
+    session_start_api: ApiConfig = Field(default_factory=ApiConfig)
+    session_finish_api: ApiConfig = Field(default_factory=ApiConfig)
+
+
+class WorkflowDetailConfig(BaseModel):
+    """Workflow-level API configurations."""
+
+    filter_api: ApiConfig = Field(default_factory=ApiConfig)
+    metadata_api: SessionConfig | None = Field(default_factory=SessionConfig)
+
+
+class StepDetailConfig(BaseModel):
+    """Step-level API configurations."""
+
+    Step_start_api: ApiConfig = Field(default_factory=ApiConfig)
+    Step_finish_api: ApiConfig = Field(default_factory=ApiConfig)
+
+
+class StepDetail(BaseModel):
+    """Detail information for an individual step."""
+
+    step: dict[str, Any] | None = None
+    config_api: Any | None = None
+    metadata_api: StepDetailConfig | None = Field(default_factory=StepDetailConfig)
+    data_output: dict[str, Any] | None = None
+
+
+class ContextData(BaseModel):
+    """Holds runtime context information across workflow execution."""
+
+    model_config = ConfigDict(extra="allow")
+
+    request_id: str
+    step_detail: list[StepDetail] | None = None
+    workflow_detail: WorkflowDetailConfig | None = None
+    processing_steps: dict = Field(default_factory=dict)

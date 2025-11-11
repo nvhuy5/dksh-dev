@@ -1,25 +1,12 @@
-# Standard Library Imports
-import logging
 import traceback
 from typing import Dict, Any
-
-# Third-Party Imports
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
-
-# Local Application Imports
 from utils import log_helpers
-from models.traceability_models import ServiceLog, LogType
+from models.tracking_models import ServiceLog, LogType
 
-# ===
-# Set up logging
-logger_name = "Health-check Routers"
-log_helpers.logging_config(logger_name)
-base_logger = logging.getLogger(logger_name)
-
-# Wrap the base logger with the adapter
-logger = log_helpers.ValidatingLoggerAdapter(base_logger, {})
-# ===
+# === Set up logging ===
+logger = log_helpers.get_logger("Health-check Router")
 
 router = APIRouter()
 
@@ -34,13 +21,7 @@ def _internal_health_check() -> Dict[str, str]:
     Returns:
         Dict[str, str]: A dictionary with a 'status' key set to 'ok'.
     """
-    logger.info(
-        "Health check passed successfully.",
-        extra={
-            "service": ServiceLog.API_GATEWAY,
-            "log_type": LogType.ACCESS,
-        },
-    )
+
     return {"status": "ok"}
 
 

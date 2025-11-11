@@ -47,6 +47,26 @@
           {
               "name": "AWS_SECRET_ACCESS_KEY",
               "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-app-credentials-${SECRET_SUFFIX}:AWS_SECRET_KEY::"
+          },
+          {
+              "name": "ALLOW_TEST_SLEEP",
+              "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-app-credentials-${SECRET_SUFFIX}:ALLOW_TEST_SLEEP::"
+          },
+          {
+              "name": "SLEEP_DURATION",
+              "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-app-credentials-${SECRET_SUFFIX}:SLEEP_DURATION::"
+          },
+          {
+              "name": "CELERY_RESULT_EXPIRES",
+              "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-app-credentials-${SECRET_SUFFIX}:CELERY_RESULT_EXPIRES::"
+          },
+          {
+              "name": "CELERY_TASK_SOFT_TIME_LIMIT",
+              "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-app-credentials-${SECRET_SUFFIX}:CELERY_TASK_SOFT_TIME_LIMIT::"
+          },
+          {
+              "name": "CELERY_TASK_TIME_LIMIT",
+              "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-app-credentials-${SECRET_SUFFIX}:CELERY_TASK_TIME_LIMIT::"
           }
         ],
         "workingDirectory": "/app",
