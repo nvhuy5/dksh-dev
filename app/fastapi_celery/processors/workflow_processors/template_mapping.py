@@ -17,6 +17,13 @@ def template_data_mapping(self: ProcessorBase, data_input, response_api, *args, 
     """
     if ALLOW_TEST_SLEEP and SLEEP_DURATION >0: # NOSONAR
         time.sleep(SLEEP_DURATION)
+
+    data_output = {
+        "totalHeaders": 0,
+        "mappedHeaders": 0,
+        "unmappedHeaders": 0,
+        "fileLogLink": ""
+    }
         
     try:
 
@@ -92,12 +99,9 @@ def template_data_mapping(self: ProcessorBase, data_input, response_api, *args, 
             update={"items": df.to_dict(orient="records")}
         )
 
-        data_output = {
-            "totalHeaders": len(headers_sorted),
-            "mappedHeaders": len(mapping_dict),
-            "unmappedHeaders": len(headers_sorted) - len(mapping_dict),
-            "fileLogLink": ""
-        }
+        data_output["totalHeaders"] = len(headers_sorted)
+        data_output["mappedHeaders"] = len(mapping_dict)
+        data_output["unmappedHeaders"] = len(headers_sorted) - len(mapping_dict)
 
  
         return StepOutput(
@@ -109,7 +113,7 @@ def template_data_mapping(self: ProcessorBase, data_input, response_api, *args, 
 
     except Exception as e:  # pragma: no cover
         logger.error(
-            f"[template_data_mapping] Failed to map data, Error: {e}",
+            f"[template_data_mapping] An error occurred: {e}",
             extra={
                 "service": ServiceLog.DATA_MAPPING,
                 "log_type": LogType.ERROR,
@@ -117,4 +121,10 @@ def template_data_mapping(self: ProcessorBase, data_input, response_api, *args, 
             },
             exc_info=True,
         )
-        raise
+        return StepOutput(
+            data=None,
+            sub_data={"data_output": data_output},
+            step_status=StatusEnum.FAILED,
+            step_failure_message=[f"[template_data_mapping] An error occurred: {e}"]
+        )
+

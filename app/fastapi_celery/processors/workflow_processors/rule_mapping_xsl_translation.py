@@ -1,15 +1,12 @@
-from utils import log_helpers
 from utils import read_n_write_s3
 from utils.bucket_helper import get_s3_key_prefix
 from utils.common_utils import get_csv_buffer_file
-from processors.processor_base import ProcessorBase
+from processors.processor_base import ProcessorBase, logger
 from models.class_models import StatusEnum, StepOutput
 from processors.helpers.xml_helper import get_data_output_for_rule_mapping
 from config_loader import ALLOW_TEST_SLEEP, SLEEP_DURATION
 import time
 
-# === Set up logging ===
-logger = log_helpers.get_logger("rule_mapping_xsl_translation")
 
 def xsl_translation(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
     if ALLOW_TEST_SLEEP and SLEEP_DURATION >0: # NOSONAR
@@ -34,13 +31,7 @@ def xsl_translation(self: ProcessorBase, data_input, response_api, *args, **kwar
         )
 
         if upload_result.get("status") != StatusEnum.SUCCESS:
-            logger.error(f"[xsl_translation] Upload to S3 failed: {upload_result}")
-            return StepOutput(
-                data=None,
-                sub_data={"data_output": data_output},
-                step_status=StatusEnum.FAILED,
-                step_failure_message=[upload_result.get("error")],
-            )
+            raise RuntimeError(f"{upload_result.get('error')}")
 
         logger.info(f"[xsl_translation] Upload successful: {s3_key_csv}")
         data_input.data.file_output = s3_key_csv
@@ -53,10 +44,10 @@ def xsl_translation(self: ProcessorBase, data_input, response_api, *args, **kwar
         )
 
     except Exception as e:
-        logger.exception(f"[xsl_translation] Exception during processing: {e}")
+        logger.exception(f"[xsl_translation] An error occurred: {e}", exc_info=True)
         return StepOutput(
             data=None,
             sub_data={"data_output": data_output},
             step_status=StatusEnum.FAILED,
-            step_failure_message=[str(e)],
+            step_failure_message=[f"[xsl_translation] An error occurred: {e}"],
         )

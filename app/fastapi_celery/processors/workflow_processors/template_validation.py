@@ -143,49 +143,75 @@ class TemplateValidation:
 def template_format_validation(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
     if ALLOW_TEST_SLEEP and SLEEP_DURATION >0: # NOSONAR
         time.sleep(SLEEP_DURATION)
-    # Step 1: Get schema_columns validation
-    schema_columns = []
-    if isinstance(response_api, dict):
-        if "data" in response_api and isinstance(response_api["data"], dict):
-            schema_columns = response_api["data"].get("columns", [])
-        elif "columns" in response_api:
-            schema_columns = response_api.get("columns", [])
- 
-    if not schema_columns:
+
+    data_output = {
+        "totalRecords": 0,
+        "validRecords": 0,
+        "errorRecords": 0,
+        "fileLogLink": ""
+    }
+
+    try:
+        # Step 1: Get schema_columns validation
+        schema_columns = []
+        if isinstance(response_api, dict):
+            if "data" in response_api and isinstance(response_api["data"], dict):
+                schema_columns = response_api["data"].get("columns", [])
+            elif "columns" in response_api:
+                schema_columns = response_api.get("columns", [])
+    
+        if not schema_columns:
+            logger.error(
+                "Schema columns not found in API response",
+                extra={
+                    "service": ServiceLog.DATA_VALIDATION,
+                    "log_type": LogType.ERROR,
+                    "data": self.tracking_model,
+                },
+            )
+            failed_output = data_input.data.model_copy(
+                update={"step_status": StatusEnum.FAILED, "messages": ["Schema columns not found in API response"]}
+            )
+            return StepOutput(
+                data=failed_output,
+                sub_data={},
+                step_status=StatusEnum.FAILED,
+                step_failure_message=failed_output.messages,
+            )
+    
+        # Step 2: run validation
+        po_validation = TemplateValidation(po_json=data_input.data, tracking_model=self.tracking_model)
+        validation_result, data_output = po_validation.data_validation(schema_columns=schema_columns)
+    
+    
+        # Step 3: wrap into StepOutput
+        return StepOutput(
+            data=validation_result,
+            sub_data={"data_output": data_output},
+            step_status=(
+                StatusEnum.SUCCESS
+                if validation_result.step_status == StatusEnum.SUCCESS
+                else StatusEnum.FAILED
+            ),
+            step_failure_message=(
+                None if validation_result.step_status == StatusEnum.SUCCESS else validation_result.messages
+            ),
+        )
+    
+    except Exception as e:
         logger.error(
-            "Schema columns not found in API response",
+            f"[template_validation] An error occurred: {e}",
             extra={
                 "service": ServiceLog.DATA_VALIDATION,
                 "log_type": LogType.ERROR,
                 "data": self.tracking_model,
             },
+            exc_info=True,
         )
-        failed_output = data_input.data.model_copy(
-            update={"step_status": StatusEnum.FAILED, "messages": ["Schema columns not found in API response"]}
-        )
+
         return StepOutput(
-            data=failed_output,
-            sub_data={},
+            data=None,
+            sub_data={"data_output": data_output},
             step_status=StatusEnum.FAILED,
-            step_failure_message=failed_output.messages,
+            step_failure_message=[f"[template_validation] An error occurred: {e}"]
         )
- 
-    # Step 2: run validation
-    po_validation = TemplateValidation(po_json=data_input.data, tracking_model=self.tracking_model)
-    validation_result, data_output = po_validation.data_validation(schema_columns=schema_columns)
- 
- 
-    # Step 3: wrap into StepOutput
-    return StepOutput(
-        data=validation_result,
-        sub_data={"data_output": data_output},
-        step_status=(
-            StatusEnum.SUCCESS
-            if validation_result.step_status == StatusEnum.SUCCESS
-            else StatusEnum.FAILED
-        ),
-        step_failure_message=(
-            None if validation_result.step_status == StatusEnum.SUCCESS else validation_result.messages
-        ),
-    )
- 

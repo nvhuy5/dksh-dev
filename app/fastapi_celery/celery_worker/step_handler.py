@@ -9,14 +9,13 @@ from processors.processor_base import ProcessorBase
 from models.class_models import (
     ApiUrl,
     ContextData,
-    StepDetail,
     WorkflowStep,
     StepDefinition,
     StatusEnum,
     StepOutput,
 )
-from models.tracking_models import ServiceLog, LogType, TrackingModel
-from typing import Dict, Any, Callable, List, Optional, Union
+from models.tracking_models import ServiceLog, LogType
+from typing import Any
 from utils import log_helpers
 
 
@@ -41,7 +40,7 @@ async def execute_step(file_processor: ProcessorBase, context_data: ContextData,
             prev_step = next((s for s in full_sorted_steps if s.stepOrder == prev_order), None)
         
         if getattr(file_processor.tracking_model, "rerun_step_id", None):
-            if str(step.workflowStepId) == str(file_processor.tracking_model.rerun_step_id):
+            if step.workflowStepId == file_processor.tracking_model.rerun_step_id:
                 if prev_step:
                     prev_result = file_processor.get_step_result_from_s3(step=prev_step)
                     if prev_result:
@@ -148,7 +147,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
 
     step_name_upper = step_name.upper()
     step_map = {
-        "FILE_PARSE": [
+        "MASTER_DATA_FILE_PARSER": [
             {
                 "url": ApiUrl.WORKFLOW_TEMPLATE_PARSE.full_url(),
                 "method": "get",
@@ -157,7 +156,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "VALIDATE_HEADER": [
+        "MASTER_DATA_VALIDATE_HEADER": [
             {
                 "url": ApiUrl.MASTERDATA_HEADER_VALIDATION.full_url(),
                 "method": "get",
@@ -166,7 +165,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "VALIDATE_DATA": [
+        "MASTER_DATA_VALIDATE_DATA": [
             {
                 "url": ApiUrl.MASTERDATA_COLUMN_VALIDATION.full_url(),
                 "method": "get",
@@ -175,7 +174,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "MASTER_DATA_LOAD": [
+        "MASTER_DATA_LOAD_DATA": [
             {
                 "url": ApiUrl.MASTER_DATA_LOAD_DATA.full_url(),
                 "method": "post",
@@ -185,6 +184,15 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                     "fileName": ctx["file_name_wo_ext"],
                     "data": ctx["items"],
                 },
+            }
+        ],
+        "TEMPLATE_FILE_PARSE": [
+            {
+                "url": ApiUrl.WORKFLOW_TEMPLATE_PARSE.full_url(),
+                "method": "get",
+                "required_context": ["workflowStepId"],
+                "params": lambda ctx: {"workflowStepId": ctx["workflowStepId"]},
+                "body": None,
             }
         ],
         "TEMPLATE_FORMAT_VALIDATION": [
@@ -259,7 +267,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 }
             }
         ],
-        "METADATA_EXTRACT": [
+        "[RULE_MP]_METADATA_EXTRACT": [
             {
                 "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
                 "method": "get",
@@ -268,7 +276,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "XSL_TRANSLATION": [
+        "[RULE_MP]_XSL_TRANSLATION": [
             {
                 "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
                 "method": "get",
@@ -277,7 +285,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "SUBMIT": [
+        "[RULE_MP]_SUBMIT": [
             {
                 "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
                 "method": "get",
@@ -286,7 +294,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "SEND_TO": [
+        "[RULE_MP]_SEND_TO": [
             {
                 "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
                 "method": "get",
@@ -295,7 +303,7 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
                 "body": None,
             }
         ],
-        "RENAME": [
+        "[RULE_MP]_RENAME": [
             {
                 "url": lambda ctx: f"{ApiUrl.WORKFLOW_STEP.full_url()}/{ctx['workflowStepId']}",
                 "method": "get",
@@ -320,11 +328,11 @@ def get_context_api(step_name: str) -> dict[str, Any] | None:
 
 
 def fill_required_keys_for_request(
-    required: Dict[str, Any],
-    file_record: Dict[str, Any],
+    required: dict[str, Any],
+    file_record: dict[str, Any],
     step: BaseModel,
-    processing_steps: Dict[str, Any],
-) -> Dict[str, Any]:
+    processing_steps: dict[str, Any],
+) -> dict[str, Any]:
     """
     Fill required fields with values from file_record, step, and processing_steps.
     Priority: file_record > step > processing_steps.
@@ -344,15 +352,16 @@ def fill_required_keys_for_request(
                     break
                 elif hasattr(step_info, "data"):
                     data = step_info.data
-                    if hasattr(data,key):
+                    if hasattr(data, key):
                         required[key] = getattr(data,key)
                         break 
     return required
 
 
 def fill_required_keys_from_response(
-    response: Union[Dict[str, Any], List[Dict[str, Any]]], required: Dict[str, Any]
-) -> Dict[str, Any]:
+    response: dict[str, Any] | list[dict[str, Any]],
+    required: dict[str, Any]
+) -> dict[str, Any]:
     """
     Fill values from response into required
 
