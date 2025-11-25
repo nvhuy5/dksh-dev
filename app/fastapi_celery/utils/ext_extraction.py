@@ -64,7 +64,7 @@ class FileExtensionProcessor: # pragma: no cover  # NOSONAR
             self._load_s3_file()
 
         self._get_file_extension()
-        self._get_file_capacity()
+        self._get_file_size()
 
     def _load_local_file(self) -> None:
         """
@@ -141,7 +141,7 @@ class FileExtensionProcessor: # pragma: no cover  # NOSONAR
                 f"Failed to get file extension for '{self.file_path}'. Original error: {e}"
             ) from e
 
-    def _get_file_capacity(self) -> None:
+    def _get_file_size(self) -> None:
         """
         Determine and format the file size in KB or MB.
 

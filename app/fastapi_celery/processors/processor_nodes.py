@@ -57,7 +57,7 @@ PROCESS_DEFINITIONS = {
     ),
     "TEMPLATE_PUBLISH_DATA": StepDefinition(
         function_name="publish_data",
-        data_input="mapped_data",
+        data_input="xsl_translation_data",
         data_output="publish_data",
         require_data_api = True,
         require_data_output=True,
@@ -158,7 +158,7 @@ PROCESS_DEFINITIONS = {
     ),
     "[RULE_MP]_RENAME" : StepDefinition(
         function_name = "rename",
-        data_input="mapped_data",
+        data_input="xsl_translation_data",
         data_output="rename_data",
         require_data_api = True,
         require_data_output=True,

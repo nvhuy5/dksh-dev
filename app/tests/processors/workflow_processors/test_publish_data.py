@@ -13,6 +13,10 @@ class DummyClass:
             step_status=StatusEnum.SUCCESS,
             step_failure_message=None
         )
+    
+class DummySchema:
+    def model_copy(self, update=None):
+        return {"messages": update.get("messages")}
 
 class DummyProcessor(ProcessorBase):
     def __init__(self):
@@ -35,44 +39,68 @@ class TestPublishData(unittest.TestCase):
     def setUp(self):
         self.obj = DummyClass()
 
-    def test_publish_data_returns_stepoutput(self):
-        data_input = {"key": "value"}
-        response_api = {"response": "ok"}
-
-        result = self.obj.publish_data(data_input, response_api)
-
-        self.assertIsInstance(result, StepOutput)
-        self.assertEqual(result.data, data_input)
-        self.assertEqual(result.sub_data, {})
-        self.assertEqual(result.step_status, StatusEnum.SUCCESS)
-        self.assertIsNone(result.step_failure_message)
-
-    def test_publish_data_invalid_response_raises_error(self):
-        processor = DummyProcessor() 
-        data_input = MagicMock()
-        with self.assertRaises(RuntimeError):
-            publish_data(processor, data_input, None)
-
-    @patch("processors.workflow_processors.publish_data.build_publish_data_ouput")
+    @patch("processors.workflow_processors.publish_data.build_publish_data_output")
     def test_publish_data_success_status(self, mock_build_output):
         mock_build_output.return_value = {"dummy": "value"}
-
+ 
         processor = DummyProcessor()
         data_input = MagicMock()
         data_input.data = DummyDataModel()
-        response_api = {"success": True}
-
+        response_api = {"success": True, "message": "OK"}
+ 
         result = publish_data(
             processor,
             data_input,
+            None,
             response_api,
             connectionDto={"requiredFields": {"REQUIRED": []}, "connectionType": "SFTP"}
         )
-
+ 
         self.assertIsInstance(result, StepOutput)
         self.assertEqual(result.step_status, StatusEnum.SUCCESS)
-        self.assertEqual(result.sub_data["data_output"]["sentStatus"], "Success")
-
+        self.assertEqual(result.sub_data["data_output"]["sentStatus"], "Sent")
+    @patch("processors.workflow_processors.publish_data.build_publish_data_output")
+    def test_publish_data_success_status(self, mock_build_output):
+        mock_build_output.return_value = {"dummy": "value"}
+ 
+        processor = DummyProcessor()
+        data_input = MagicMock()
+        data_input.data = DummyDataModel()
+        response_api = {"success": True, "message": "OK"}
+ 
+        result = publish_data(
+            processor,
+            data_input,
+            None,
+            response_api,
+            connectionDto={"requiredFields": {"REQUIRED": []}, "connectionType": "SFTP"}
+        )
+ 
+        self.assertIsInstance(result, StepOutput)
+        self.assertEqual(result.step_status, StatusEnum.SUCCESS)
+        self.assertEqual(result.sub_data["data_output"]["sentStatus"], "Sent")
+ 
+    def test_publish_data_invalid_response_raises_error(self):
+        processor = DummyProcessor()
+        data_input = MagicMock()
+        schema_object = DummySchema()
+        data_input.data = DummyDataModel()
+ 
+        response_api = None
+ 
+        result = publish_data(
+            processor,
+            data_input,
+            schema_object,
+            response_api,
+            connectionDto={"requiredFields": {"REQUIRED": []}, "connectionType": "SFTP"}
+        )
+ 
+        self.assertIsInstance(result, StepOutput)
+        self.assertEqual(result.step_status, StatusEnum.FAILED)
+        self.assertIn("did not return a valid response", result.step_failure_message[0])
+ 
+ 
     @patch("processors.workflow_processors.publish_data.read_n_write_s3.copy_object_between_buckets")
     @patch("processors.workflow_processors.publish_data.get_s3_key_prefix")
     def test_copy_file_success(self, mock_get_prefix, mock_copy_s3):
@@ -88,3 +116,17 @@ class TestPublishData(unittest.TestCase):
         self.assertIn("fileOutputLink", result)
         self.assertEqual(data_input.data.file_output, "prefix/source_file.txt")
         self.assertEqual(result["fileOutputLink"], "test-bucket/prefix/source_file.txt")
+
+    @patch("processors.workflow_processors.publish_data.read_n_write_s3.copy_object_between_buckets")
+    @patch("processors.workflow_processors.publish_data.get_s3_key_prefix")
+    def test_copy_file_failure(self, mock_get_prefix, mock_copy_s3):
+        mock_get_prefix.return_value = "prefix/"
+        mock_copy_s3.return_value = {"status": StatusEnum.FAILED, "error": "Copy failed"}
+        
+        processor = DummyProcessor()
+        data_input = MagicMock()
+        data_input.data = DummyDataModel()
+        
+        result = copy_file(processor, data_input, response_api=None, step="dummy_step")
+        
+        assert result["fileOutputLink"] == ""

@@ -35,12 +35,12 @@ class TxtHelper:
         items = parse_func(lines)
 
         return PODataParsed(
-            original_file_path=self.file_record.get("file_path"),
+            file_path=self.file_record.get("file_path"),
             document_type=self.file_record.get("document_type"),
             po_number=str(len(items)),
             items=items,
             metadata=None,
             step_status = StatusEnum.SUCCESS,
             messages=None,
-            capacity=self.file_record.get("file_size"),
+            file_size=self.file_record.get("file_size"),
         )

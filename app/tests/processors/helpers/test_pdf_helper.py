@@ -10,7 +10,7 @@ def test_build_success_response_basic():
     po_number = "PO123"
     items = [{"item": "A"}]
     metadata = {"meta": "ok"}
-    capacity = "100KB"
+    file_size = "100KB"
 
     result = pdf_helper.build_success_response(
         file_path=file_path,
@@ -18,16 +18,16 @@ def test_build_success_response_basic():
         po_number=po_number,
         items=items,
         metadata=metadata,
-        capacity=capacity,
+        file_size=file_size,
     )
 
     assert type(result).__name__ == "PODataParsed"
-    assert str(result.original_file_path) == file_path
+    assert result.file_path == file_path
     assert result.document_type == document_type
     assert result.po_number == po_number
     assert result.items == items
     assert result.metadata == metadata
-    assert result.capacity == capacity
+    assert result.file_size  == file_size 
     assert result.step_status == StatusEnum.SUCCESS
     assert result.messages is None
 
@@ -42,11 +42,11 @@ def test_build_failed_response_default(monkeypatch):
     result = pdf_helper.build_failed_response(file_path, exc=exc)
 
     assert type(result).__name__ == "PODataParsed"
-    assert str(result.original_file_path) == file_path
+    assert result.file_path == file_path
     assert result.document_type == "order"
     assert result.items == []
     assert result.metadata == {}
-    assert result.capacity == ""
+    assert result.file_size == ""
     assert result.step_status == StatusEnum.FAILED
     assert isinstance(result.messages, list)
     assert result.messages  # not empty
@@ -63,14 +63,14 @@ def test_build_failed_response_master_data_type(monkeypatch):
     result = pdf_helper.build_failed_response(
         file_path=file_path,
         document_type="master_data",
-        capacity="5MB",
+        file_size="5MB",
         exc=exc,
     )
 
     assert type(result).__name__ == "PODataParsed"
-    assert str(result.original_file_path) == file_path
+    assert result.file_path == file_path
     assert result.document_type == "master_data"
-    assert result.capacity == "5MB"
+    assert result.file_size == "5MB"
     assert result.step_status == StatusEnum.FAILED
     mock_logger.error.assert_called_once()
 
@@ -89,7 +89,7 @@ def test_build_failed_response_invalid_document_type(monkeypatch):
     )
 
     assert type(result).__name__ == "PODataParsed"
-    assert str(result.original_file_path) == file_path
+    assert result.file_path == file_path
     assert result.document_type == "order"
     assert result.step_status == StatusEnum.FAILED
     mock_logger.error.assert_called_once()
@@ -104,7 +104,7 @@ def test_build_failed_response_no_exception(monkeypatch):
     result = pdf_helper.build_failed_response(file_path)
 
     assert type(result).__name__ == "PODataParsed"
-    assert str(result.original_file_path) == file_path
+    assert result.file_path == file_path
     assert result.step_status == StatusEnum.FAILED
     assert isinstance(result.messages, list)
     # Should contain either traceback info or "NoneType"

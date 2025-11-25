@@ -6,9 +6,7 @@ from config_loader import ALLOW_TEST_SLEEP, SLEEP_DURATION
 import time
 
 
-def parse_file_to_json(
-    self: ProcessorBase, data_input, response_api, *args, **kwargs
-) -> StepOutput:  # NOSONAR
+def parse_file_to_json(self: ProcessorBase, data_input, schema_object, response_api, *args, **kwargs) -> StepOutput:  # NOSONAR
     """
     Parses a file to JSON using the appropriate processor based on template code
     """
@@ -49,7 +47,11 @@ def parse_file_to_json(
             exc_info=True,
         )
         return StepOutput(
-            data=None,
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [f"[parse_file_to_json] An error occurred: {e}"]
+                }
+            ),
             sub_data={"data_output": data_output},
             step_status=StatusEnum.FAILED,
             step_failure_message=[f"[parse_file_to_json] An error occurred: {e}"],

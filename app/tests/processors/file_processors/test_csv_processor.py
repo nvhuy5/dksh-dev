@@ -1,7 +1,8 @@
 import io
 import pytest
 from unittest.mock import patch
-from pathlib import Path
+import os
+import tempfile
 
 from fastapi_celery.processors.file_processors.csv_processor import CSVProcessor, METADATA_SEPARATOR
 from models.class_models import DocumentType, PODataParsed, SourceType, StatusEnum
@@ -9,8 +10,10 @@ from models.class_models import DocumentType, PODataParsed, SourceType, StatusEn
 
 @pytest.fixture
 def mock_file_record_local(tmp_path):
-    file_path = tmp_path / "file.csv"
-    file_path.write_text("col1,col2\nval1,val2\n", encoding="utf-8")
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, "file.csv")
+    with open(file_path, "w", encoding="utf-8") as f:
+         f.write("col1,col2\nval1,val2\n")
     return {
         "file_path": file_path,
         "source_type": "local",

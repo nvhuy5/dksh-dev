@@ -127,12 +127,12 @@ class XMLProcessor:
         logger.info("File has been processed successfully!")
 
         return PODataParsed(
-            original_file_path=self.file_record.get("file_path"),
+            file_path=self.file_record.get("file_path"),
             document_type=self.file_record.get("document_type"),
             po_number=po_number,
             items=json_data,
             metadata=None,
             step_status = StatusEnum.SUCCESS,
             messages=None,
-            capacity=self.file_record.get("file_size"),
+            file_size=self.file_record.get("file_size"),
         )

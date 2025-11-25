@@ -34,13 +34,13 @@ def masterdata_json():
     }
     headers = ["ID", "Name", "Date"]
     return MasterDataParsed(
-        original_file_path="dummy_path",
+        file_path="dummy_path",
         headers=headers,
         document_type="master_data",
         items=data,
         step_status=StatusEnum.SUCCESS,
         messages=[],
-        capacity="1KB",
+        file_size="1KB",
     )
 
 
@@ -127,7 +127,7 @@ async def test_masterdata_header_validation_wrapper_success(masterdata_json):
         instance = mock_mv.return_value
         instance.header_validation.return_value = masterdata_json
 
-        result = masterdata_header_validation(dummy_self, input_data, [])
+        result = masterdata_header_validation(dummy_self, input_data, None, [])
         assert type(result).__name__ == "StepOutput"
         assert result.step_status == StatusEnum.SUCCESS
 
@@ -149,7 +149,7 @@ async def test_masterdata_header_validation_wrapper_fail(masterdata_json):
         instance = mock_mv.return_value
         instance.header_validation.return_value = failed_data
 
-        result = masterdata_header_validation(dummy_self, input_data, [])
+        result = masterdata_header_validation(dummy_self, input_data, None, [])
         assert type(result).__name__ == "StepOutput"
         assert result.step_status == StatusEnum.FAILED
 
@@ -169,7 +169,7 @@ async def test_masterdata_data_validation_wrapper_success(masterdata_json):
         instance = mock_mv.return_value
         instance.data_validation.return_value = masterdata_json
 
-        result = masterdata_data_validation(dummy_self, input_data, [])
+        result = masterdata_data_validation(dummy_self, input_data, None, [])
         assert type(result).__name__ == "StepOutput"
         assert result.step_status == StatusEnum.SUCCESS
 
@@ -191,6 +191,6 @@ async def test_masterdata_data_validation_wrapper_fail(masterdata_json):
         instance = mock_mv.return_value
         instance.data_validation.return_value = failed_data
 
-        result = masterdata_data_validation(dummy_self, input_data, [])
+        result = masterdata_data_validation(dummy_self, input_data, None, [])
         assert type(result).__name__ == "StepOutput"
         assert result.step_status == StatusEnum.FAILED

@@ -6,6 +6,7 @@ import config_loader
 from utils import log_helpers
 from models.tracking_models import ServiceLog, LogType
 from models.class_models import WorkflowStep
+from pathlib import Path
 
 # === Set up logging ===
 logger = log_helpers.get_logger("Redis Connection")
@@ -213,7 +214,7 @@ class RedisConnector:
                     "log_type": LogType.ACCESS,
                     "celery_id": celery_id,
                     "key": name,
-                    "data": serialized_data,
+                    #"data": serialized_data,
                     "ttl_seconds": ttl,
                 },
             )
@@ -291,9 +292,13 @@ class RedisConnector:
     def update_celery_task_fields(self, celery_id: str, fields: dict[str, any]) -> bool:
         """Update specific fields in Redis for a Celery task."""
         name = f"celery_task:{celery_id}"
+
+        def default_encoder(obj):
+            return str(obj)
+        
         try:
             # Serialize values to JSON
-            serialized = {k: json.dumps(v) for k, v in fields.items()}
+            serialized = {k: json.dumps(v, default=default_encoder) for k, v in fields.items()}
 
             # Update Redis hash
             self.redis_client.hset(name, mapping=serialized)
@@ -305,7 +310,7 @@ class RedisConnector:
                     "log_type": LogType.ACCESS,
                     "celery_id": celery_id,
                     "key": name,
-                    "fields": serialized,
+                    #"fields": serialized,
                 },
             )
             return True

@@ -191,7 +191,7 @@ class MasterValidation:
             return False
 
 
-def masterdata_header_validation(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
+def masterdata_header_validation(self: ProcessorBase, data_input, schema_object, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
     """
     Validates the header section of the input data against a provided reference schema.
 
@@ -202,27 +202,38 @@ def masterdata_header_validation(self: ProcessorBase, data_input, response_api, 
     Returns:
         bool: True if header validation passes, False otherwise.
     """
+    try:
+        master_data = MasterValidation(masterdata_json=data_input.data, tracking_model=self.tracking_model)
+        header_validation_result = master_data.header_validation(header_reference=response_api)
 
-    master_data = MasterValidation(masterdata_json=data_input.data, tracking_model=self.tracking_model)
-    header_validation_result = master_data.header_validation(header_reference=response_api)
+        return StepOutput(
+            data=header_validation_result,
+            sub_data={},
+            step_status=(
+                StatusEnum.SUCCESS
+                if header_validation_result.step_status == StatusEnum.SUCCESS
+                else StatusEnum.FAILED
+            ),
+            step_failure_message=(
+                None
+                if header_validation_result.step_status == StatusEnum.SUCCESS
+                else header_validation_result.messages
+            ),
+        )
+    except Exception as e:
+        return StepOutput(
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [f"[Masterdata_header_validation] An error occurred: {e}"]
+                }
+            ),
+            sub_data={},
+            step_status= StatusEnum.FAILED,
+            step_failure_message=[f"[Masterdata_header_validation] An error occurred: {e}"]
+        )
 
-    return StepOutput(
-        data=header_validation_result,
-        sub_data={},
-        step_status=(
-            StatusEnum.SUCCESS
-            if header_validation_result.step_status == StatusEnum.SUCCESS
-            else StatusEnum.FAILED
-        ),
-        step_failure_message=(
-            None
-            if header_validation_result.step_status == StatusEnum.SUCCESS
-            else header_validation_result.messages
-        ),
-    )
 
-
-def masterdata_data_validation(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
+def masterdata_data_validation(self: ProcessorBase, data_input, schema_object, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
     """
     Validates the data rows in the input data against a provided reference schema.
 
@@ -233,21 +244,32 @@ def masterdata_data_validation(self: ProcessorBase, data_input, response_api, *a
     Returns:
         bool: True if all data rows pass validation, False otherwise.
     """
+    try:
+        master_data = MasterValidation(masterdata_json=data_input.data, tracking_model=self.tracking_model)
+        data_validation_result = master_data.data_validation(data_reference=response_api)
 
-    master_data = MasterValidation(masterdata_json=data_input.data, tracking_model=self.tracking_model)
-    data_validation_result = master_data.data_validation(data_reference=response_api)
-
-    return StepOutput(
-        data=data_validation_result,
-        sub_data={},
-        step_status=(
-            StatusEnum.SUCCESS
-            if data_validation_result.step_status == StatusEnum.SUCCESS
-            else StatusEnum.FAILED
-        ),
-        step_failure_message=(
-            None
-            if data_validation_result.step_status == StatusEnum.SUCCESS
-            else data_validation_result.messages
-        ),
-    )
+        return StepOutput(
+            data=data_validation_result,
+            sub_data={},
+            step_status=(
+                StatusEnum.SUCCESS
+                if data_validation_result.step_status == StatusEnum.SUCCESS
+                else StatusEnum.FAILED
+            ),
+            step_failure_message=(
+                None
+                if data_validation_result.step_status == StatusEnum.SUCCESS
+                else data_validation_result.messages
+            ),
+        )
+    except Exception as e:
+        return StepOutput(
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [f"[Masterdata_data_validation] An error occurred: {e}"]
+                }
+            ),
+            sub_data={},
+            step_status= StatusEnum.FAILED,
+            step_failure_message=[f"[Masterdata_data_validation] An error occurred: {e}"]
+        )

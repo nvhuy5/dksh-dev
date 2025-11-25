@@ -18,7 +18,7 @@ from fastapi_celery.processors.workflow_processors.template_validation import (
 @pytest.fixture
 def sample_po_parsed():
     return PODataParsed(
-        original_file_path=Path("/tmp/template.xlsx"),
+        file_path="/tmp/template.xlsx",
         document_type=DocumentType.ORDER,
         po_number="PO12345",
         items=[
@@ -26,7 +26,7 @@ def sample_po_parsed():
             {"col_1": "456", "col_2": "XYZ", "col_3": "2024-01-02"},
         ],
         metadata={"supplier": "ABC"},
-        capacity="small",
+        file_size="small",
         step_status=None,
         messages=None,
     )
@@ -124,7 +124,7 @@ def test_template_format_validation_success(sample_po_parsed, mock_tracking_mode
     )
 
     response_api = {"data": {"columns": schema}}
-    result = template_format_validation(DummySelf(), step_input, response_api)
+    result = template_format_validation(DummySelf(), step_input, None, response_api)
 
     assert type(result).__name__ == "StepOutput"
 
@@ -146,7 +146,7 @@ def test_template_format_validation_schema_missing(sample_po_parsed, mock_tracki
     )
 
     response_api = {"data": {"columns": []}}
-    result = template_format_validation(DummySelf(), step_input, response_api)
+    result = template_format_validation(DummySelf(), step_input, None, response_api)
 
     assert result.step_status == StatusEnum.FAILED
     assert "Schema columns not found" in result.step_failure_message[0]

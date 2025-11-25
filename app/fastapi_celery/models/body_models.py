@@ -15,6 +15,8 @@ class WorkflowSessionStartBody:
     workflowId: str  # NOSONAR
     celeryId: str  # NOSONAR
     filePath: str  # NOSONAR
+    rerunStepId: str  # NOSONAR
+    rerunWorkflowSessionId: str  # NOSONAR
 
 
 @dataclass  # NOSONAR

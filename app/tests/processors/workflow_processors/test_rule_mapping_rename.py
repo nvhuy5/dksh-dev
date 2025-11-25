@@ -18,32 +18,38 @@ class DummyData:
             file_output = "mock/prefix/old_file.csv"
         self.data = Inner()
 
+class DummySchema:
+            def model_copy(self, update=None):
+                return {"messages": update.get("messages")}
+
 
 @patch("processors.workflow_processors.rule_mapping_rename.copy_object_between_buckets")
 @patch("processors.workflow_processors.rule_mapping_rename.get_s3_key_prefix")
 @patch("processors.workflow_processors.rule_mapping_rename.get_data_output_for_rule_mapping")
 def test_rename_success(mock_get_data_output, mock_get_prefix, mock_copy):
-    """ Case: rename successfully copies object to new name."""
+    """Case: rename successfully copies object to new name."""
+    # --- Setup dummy processor & input ---
     processor = DummyProcessor()
     data_input = DummyData()
+    schema_object = DummySchema()
 
-    # Mock helper behaviors
+    # --- Mock helper behaviors ---
     mock_get_data_output.return_value = {
         "processorArgs": [{"name": "fileName", "value": "renamed_file"}]
     }
     mock_get_prefix.return_value = "mock/prefix"
     mock_copy.return_value = {"status": StatusEnum.SUCCESS}
 
-    result = rename(processor, data_input, response_api={}, step="STEP_RENAME")
+    # --- Run rename() ---
+    result = rename(processor, data_input, schema_object, response_api={}, step="STEP_RENAME")
 
+    # --- Assertions ---
     assert isinstance(result, StepOutput)
     assert result.step_status == StatusEnum.SUCCESS
     assert result.step_failure_message is None
+    assert result.data.file_output == "mock/prefix/renamed_file.csv"
 
-    # Expect file_output updated correctly
-    assert data_input.data.file_output == "mock/prefix/renamed_file.csv"
-
-    # Ensure mocks were called correctly
+    # --- Verify mocks ---
     mock_copy.assert_called_once_with(
         "mock-bucket",
         "mock/prefix/old_file.csv",
@@ -57,13 +63,18 @@ def test_rename_missing_file_name(mock_get_data_output):
     """ Case: Missing 'fileName' argument should raise ValueError."""
     processor = DummyProcessor()
     data_input = DummyData()
+    schema_object = DummySchema()
 
     mock_get_data_output.return_value = {
         "processorArgs": [{"name": "wrong param", "value": "123"}]
     }
 
-    with pytest.raises(ValueError, match="Missing argument 'fileName'"):
-        rename(processor, data_input, response_api={}, step="STEP_RENAME")
+    result = rename(processor, data_input, schema_object, response_api={}, step="STEP_RENAME")
+
+    assert isinstance(result, StepOutput)
+    assert result.step_status == StatusEnum.FAILED
+    assert "data_output" in result.sub_data
+    assert any("Missing argument 'fileName'" in msg for msg in result.step_failure_message)
 
 
 @patch("processors.workflow_processors.rule_mapping_rename.copy_object_between_buckets")
@@ -73,6 +84,7 @@ def test_rename_copy_failed(mock_get_data_output, mock_get_prefix, mock_copy):
     """ Case: Copying between buckets failed -> raise RuntimeError."""
     processor = DummyProcessor()
     data_input = DummyData()
+    schema_object = DummySchema()
 
     mock_get_data_output.return_value = {
         "processorArgs": [{"name": "fileName", "value": "renamed_file"}]
@@ -80,5 +92,11 @@ def test_rename_copy_failed(mock_get_data_output, mock_get_prefix, mock_copy):
     mock_get_prefix.return_value = "mock/prefix"
     mock_copy.return_value = {"status": StatusEnum.FAILED, "error": "S3 copy error"}
 
-    with pytest.raises(RuntimeError, match="Failed to copy object: S3 copy error"):
-        rename(processor, data_input, response_api={}, step="STEP_RENAME")
+    # --- Run rename ---
+    result = rename(processor, data_input, schema_object, response_api={}, step="STEP_RENAME")
+
+    # --- Assert StepOutput ---
+    assert isinstance(result, StepOutput)
+    assert result.step_status == StatusEnum.FAILED
+    assert "data_output" in result.sub_data
+    assert any("Failed to copy object: S3 copy error" in msg for msg in result.step_failure_message)

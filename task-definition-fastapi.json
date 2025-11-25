@@ -21,6 +21,14 @@
       "volumesFrom": [],
       "secrets": [
         {
+          "name": "BACKEND_HOST",
+          "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-all-internal-endpoints-${SECRET_ENDPOINT_SUFFIX}:BACKEND_HOST::"
+        },
+        {
+          "name": "BACKEND_PORT",
+          "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-all-internal-endpoints-${SECRET_ENDPOINT_SUFFIX}:BACKEND_PORT::"
+        },
+        {
           "name": "REDIS_HOST",
           "valueFrom": "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:dksh-datahub-${ENV}-all-internal-endpoints-${SECRET_ENDPOINT_SUFFIX}:REDIS_HOST::"
         },

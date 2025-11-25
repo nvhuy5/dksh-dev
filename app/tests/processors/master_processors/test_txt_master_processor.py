@@ -43,7 +43,7 @@ def test_parse_file_to_json_success_local(file_record_local):
     assert "Products" in result.headers
     assert "Code" in result.headers["Products"]
     assert len(result.items["Products"]) == 2
-    assert result.capacity == "100 KB"
+    assert result.file_size == "100 KB"
 
 
 # ---------------------------------------------------------

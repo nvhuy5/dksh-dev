@@ -1,3 +1,4 @@
+from models.class_models import WorkflowStep
 from utils import log_helpers
 from processors.processor_nodes import PROCESS_DEFINITIONS
 from io import BytesIO
@@ -26,6 +27,30 @@ def get_step_name(step_name: str) -> str | None:
 
     logger.warning(f"[get_step_name] No match found for '{step_name}'")
     return None
+
+
+def reverse_step_name(step_name: str, list_items: list[WorkflowStep]) -> str | None:
+    """
+    Case 1: "[RULE_MP]_SUBMIT" -> "CUSTOMER3_SUBMIT"
+    Case 2: "TEMPLATE_FILE_PARSE" -> "TEMPLATE_FILE_PARSE"
+    """
+
+    # Case 2: exact match
+    for item in list_items:
+        if item.stepName == step_name:
+            return step_name
+
+    # Case 1: dynamic match
+    if step_name.startswith("[") and "]_" in step_name:
+        suffix = step_name.split("]_")[-1]
+
+        for item in list_items:
+            if item.stepName.endswith(suffix):
+                return item.stepName
+
+    return None
+
+
 
 def get_csv_buffer_file(data_input) -> BytesIO:
     """

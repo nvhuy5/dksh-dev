@@ -74,12 +74,12 @@ class ExcelProcessor(excel_helper.ExcelHelper):
             else:
                 i += 1
         return PODataParsed(
-            original_file_path=self.file_record.get("file_path"),
+            file_path=self.file_record.get("file_path"),
             document_type=self.file_record.get("document_type"),
             po_number=self.po_number,
             items=items,
             metadata=metadata,
             step_status = StatusEnum.SUCCESS,
             messages=None,
-            capacity=self.file_record.get("capacity"),
+            file_size=self.file_record.get("file_size"),
         )

@@ -2,13 +2,18 @@ import io
 import pytest
 from unittest.mock import patch, MagicMock
 
+import os
+import tempfile
 from fastapi_celery.processors.helpers import txt_helper
 
 
 @pytest.fixture
-def dummy_file_record_local(tmp_path):
-    dummy_path = tmp_path / "dummy.txt"
-    dummy_path.write_text("line1\nline2\nline3")
+def dummy_file_record_local():
+    temp_dir = tempfile.gettempdir()
+    dummy_path = os.path.join(temp_dir, "file.csv")
+    with open(dummy_path, "w", encoding="utf-8") as f:
+        f.write("col1,col2\nval1,val2\n")
+        
     return {
         "file_path": dummy_path,
         "source_type": "local",

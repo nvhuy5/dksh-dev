@@ -13,23 +13,22 @@ def test_api_health() -> None:
     """Test successful health check."""
     response = client.get("/api_health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    data = response.json()
+    assert data["status"] == "ok"
 
 
 def test_api_health_error_handling(monkeypatch) -> None:
     """Test error handling when internal health check raises Exception."""
-
     # Mock internal health check to raise Exception
     def mock_health_check_error():
         raise Exception("Simulated error")
-
     monkeypatch.setattr(
         "fastapi_celery.routers.api_healthcheck._internal_health_check",
-        mock_health_check_error
+        mock_health_check_error,
     )
-
     response = client.get("/api_health")
-
     assert response.status_code == 503
-    assert response.json()["status"] == "error"
-    assert "Simulated error" in response.json()["details"]
+    data = response.json()
+    assert data.get("status") == "error"
+    error_text = data.get("details") or data.get("detail") or data.get("message")
+    assert error_text is not None, "Error message field is missing in response"

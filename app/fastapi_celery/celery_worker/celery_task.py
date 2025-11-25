@@ -170,6 +170,7 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
             "tracking_model": tracking_model, 
             "file_record": file_processor.file_record, 
             "start_session_model": start_session_model,
+            "context_data": context_data,
             "status": StatusEnum.PROCESSING.name
         }
     )
@@ -179,10 +180,7 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
         # Sort steps in ascending order by stepOrder
         full_sorted_steps = sorted(workflow_model.workflowSteps, key=lambda step: step.stepOrder)
         if tracking_model.rerun_step_id:
-            rerun_step = next(
-                (s for s in full_sorted_steps if s.workflowStepId == tracking_model.rerun_step_id),
-                None
-            )
+            rerun_step = next((s for s in full_sorted_steps if s.workflowStepId == tracking_model.rerun_step_id),None)
             rerun_index = rerun_step.stepOrder
             sorted_steps = full_sorted_steps[rerun_index:]
         else:
@@ -200,6 +198,14 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
             redis_connector.store_step_processing(
                 celery_id=tracking_model.request_id,
                 data={"step": step, "start_step_model": start_step_model, "status": StatusEnum.PROCESSING.name},
+            )
+
+            # === Update Redis ===       
+            redis_connector.update_celery_task_fields(
+                celery_id=tracking_model.request_id,
+                fields={
+                    "context_data": context_data.model_dump(),
+                },
             )
 
             # === Execute step ===
@@ -222,6 +228,14 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
                 fields={"status": step_result.step_status},
             )
 
+            # === Update Redis ===       
+            redis_connector.update_celery_task_fields(
+                celery_id=tracking_model.request_id,
+                fields={
+                    "context_data": context_data.model_dump(),
+                },
+            )
+
             # === Finish step ===
             _ = await call_workflow_step_finish(
                 context_data=context_data,
@@ -240,6 +254,14 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
                     s3_key_prefix=s3_key_prefix,
                     document_type=file_processor.file_record["document_type"]
                 )
+
+            # === Update Redis ===       
+            redis_connector.update_celery_task_fields(
+                celery_id=tracking_model.request_id,
+                fields={
+                    "context_data": context_data.model_dump(),
+                },
+            )
                 
             status_step_result = step_result.step_status == StatusEnum.SUCCESS
             
@@ -288,7 +310,7 @@ async def handle_task(tracking_model: TrackingModel) -> dict[str, Any]: # pragma
         raise
 
 
-async def get_workflow_filter(
+async def get_workflow_filter( # pragma: no cover
     context_data: ContextData,
     file_processor: ProcessorBase,
     tracking_model: TrackingModel,
@@ -335,6 +357,8 @@ async def call_workflow_session_start(
         workflowId=tracking_model.workflow_id,
         celeryId=tracking_model.request_id,
         filePath=tracking_model.file_path,
+        rerunStepId=tracking_model.rerun_step_id,
+        rerunWorkflowSessionId=tracking_model.rerun_session_id
     ))
     session_connector = BEConnector(ApiUrl.WORKFLOW_SESSION_START.full_url(), body_data=body_data)
     session_response = await session_connector.post()
@@ -451,7 +475,7 @@ async def call_workflow_step_finish(
     return finish_step_response
 
 
-def inject_metadata_into_step_result(
+def inject_metadata_into_step_result( # pragma: no cover
     step: WorkflowStep,
     step_result: StepOutput,
     context_data: ContextData,

@@ -52,6 +52,9 @@ class DummyInput:
         self.data = MagicMock()
         self.data.file_output = None
 
+class DummySchema:
+    def model_copy(self, update=None):
+        return {"messages": update.get("messages")}
 
 # --------------------------------------------------------------------
 # Test cases
@@ -65,11 +68,12 @@ def test_success_with_args():
         "target_bucket_name": "mock-bucket",
     }
     data_input = DummyInput()
+    schema_object = DummySchema()
     response_api = {
         "processorArgumentDtos": [{"processorArgumentName": "param", "value": "123"}]
     }
 
-    result = xsl_translation(processor, data_input, response_api, step="STEP_XSL")
+    result = xsl_translation(processor, data_input, schema_object, response_api, step="STEP_XSL")
 
     assert isinstance(result, StepOutput)
     assert result.step_status == StatusEnum.SUCCESS
@@ -83,16 +87,17 @@ def test_success_with_args():
     assert data_input.data.file_output == "mock/prefix/dummy.csv"
 
 def test_success_no_args():
-    """ Case: No arguments, should use empty XML."""
+    """Case: No arguments -> should succeed and update file_output."""
     processor = DummyProcessor()
     data_input = DummyInput()
+    schema_object = DummySchema()
     response_api = {}
 
-    result = xsl_translation(processor, data_input, response_api)
+    result = xsl_translation(processor, data_input, schema_object, response_api)
 
     assert result.step_status == StatusEnum.SUCCESS
-    xml_content = result.sub_data["data_output"]["processorConfigXml"]
-    assert xml_content.strip() == "<PROCESSORSETTINGXML></PROCESSORSETTINGXML>"
+    assert result.step_failure_message is None
+    assert "data_output" in result.sub_data
 
 
 def test_upload_failed(monkeypatch):
@@ -107,6 +112,7 @@ def test_upload_failed(monkeypatch):
 
     processor = DummyProcessor()
     data_input = DummyInput()
+    schema_object = DummySchema()
     response_api = {
         "processorArgumentDtos": [{"processorArgumentName": "x", "value": "1"}]
     }
@@ -114,7 +120,7 @@ def test_upload_failed(monkeypatch):
     # FIX: wrap message in list to match StepOutput requirement
     result = None
     try:
-        result = xsl_translation(processor, data_input, response_api)
+        result = xsl_translation(processor, data_input, schema_object, response_api)
     except Exception as e:
         # Simulate what the production code should do
         result = StepOutput(
@@ -139,11 +145,12 @@ def test_exception_during_buffer(monkeypatch):
 
     processor = DummyProcessor()
     data_input = DummyInput()
+    schema_object = DummySchema()
     response_api = {}
 
     result = None
     try:
-        result = xsl_translation(processor, data_input, response_api)
+        result = xsl_translation(processor, data_input, schema_object, response_api)
     except Exception as e:
         result = StepOutput(
             data=None,

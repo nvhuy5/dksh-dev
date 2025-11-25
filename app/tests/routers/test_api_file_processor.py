@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from fastapi import FastAPI
@@ -55,20 +54,28 @@ def test_process_file_failure(mock_connection, mock_apply_async, mock_apply_asyn
 
 # ------------------ /tasks/stop Tests ------------------
 
-@pytest.mark.asyncio
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
+@patch("fastapi_celery.routers.api_file_processor.read_n_write_s3.write_json_to_s3", return_value={"status": "Success", "error": None})
+@patch("fastapi_celery.routers.api_file_processor.get_s3_key_prefix", return_value="mock/prefix.json")
 @patch("fastapi_celery.routers.api_file_processor.BEConnector")
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
-async def test_stop_task_success(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+def test_stop_task_success(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_get_all_steps, mock_get_task, mock_revoke, mock_disable=None, mock_write_json=None):
     # --- Mock redis task ---
     mock_get_celery_task.return_value = {
         "status": StatusEnum.PROCESSING.name,
-        "file_record": {"target_bucket_name": "mock-bucket"},
-        "tracking_model": {
-            "tracking_id": "track_123",
+        "file_record": {
+            "target_bucket_name": "mock-bucket",
+            "file_path": "/tmp/order.csv",
+            "document_type": "order",
+            "file_size": "111",
+        },
+        "tracking_model": {"request_id": "req_001"},
+        "context_data": {
             "request_id": "req_001",
+            "step_detail": [{}, {}],
+            "workflow_detail": {"metadata_api": {"session_finish_api": {}}},
         },
         "start_session_model": {"id": "session_1"},
     }
@@ -85,10 +92,9 @@ async def test_stop_task_success(mock_get_celery_task, mock_get_all_steps_for_ta
             "start_step_model": {"workflowHistoryId": "hist_1"},
         }
     }
-
-    fut = asyncio.Future()
-    fut.set_result(MagicMock(status_code=200))
-    mock_BEConnector.return_value.post = MagicMock(return_value=fut)
+    async def _post():
+        return {"status_code": 200}
+    mock_BEConnector.return_value.post = _post
 
     payload = {"task_id": "task_123", "reason": "Manual stop"}
     response = client.post("/tasks/stop", json=payload)
@@ -99,13 +105,12 @@ async def test_stop_task_success(mock_get_celery_task, mock_get_all_steps_for_ta
     mock_revoke.assert_called_once_with("task_123", terminate=True, signal="SIGKILL")
 
 
-@pytest.mark.asyncio
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
 @patch("fastapi_celery.routers.api_file_processor.BEConnector") 
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
-async def test_stop_task_failure(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+def test_stop_task_failure_workflow_not_found(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
     mock_get_all_steps_for_task.return_value = None
     mock_get_celery_task.return_value = {}
 
@@ -125,11 +130,21 @@ async def test_stop_task_failure(mock_get_celery_task, mock_get_all_steps_for_ta
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
 @patch("fastapi_celery.routers.api_file_processor.logger")
-def test_stop_task_exception_handling(mock_logger, mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+def test_stop_task_exception_handling_be_failure(mock_logger, mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
     mock_get_celery_task.return_value = {
         "status": StatusEnum.PROCESSING.name,
-        "file_record": {"target_bucket_name": "mock-bucket"},
-        "tracking_model": {"tracking_id": "track_123", "request_id": "req_001"},
+        "file_record": {
+            "target_bucket_name": "mock-bucket",
+            "file_path": "/tmp/order.csv",
+            "document_type": "order",
+            "file_size": "111",
+        },
+        "tracking_model": {"request_id": "req_001"},
+        "context_data": {
+            "request_id": "req_001",
+            "step_detail": [{}, {}],
+            "workflow_detail": {"metadata_api": {"session_finish_api": {}}},
+        },
         "start_session_model": {"id": "session_1"},
     }
 
@@ -145,7 +160,9 @@ def test_stop_task_exception_handling(mock_logger, mock_get_celery_task, mock_ge
         }
     }
 
-    mock_BEConnector.return_value.post.side_effect = Exception("Simulated BEConnector Exception")
+    async def _boom():
+        raise Exception("Simulated BEConnector Exception")
+    mock_BEConnector.return_value.post = _boom
 
     payload = {"task_id": "task_123", "reason": "Manual stop"}
     response = client.post("/tasks/stop", json=payload)
@@ -156,17 +173,28 @@ def test_stop_task_exception_handling(mock_logger, mock_get_celery_task, mock_ge
     mock_logger.error.assert_called()
 
 
-@pytest.mark.asyncio
 @patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
 @patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
+@patch("fastapi_celery.routers.api_file_processor.read_n_write_s3.write_json_to_s3", return_value={"status": "Failed", "error": "S3 error"})
+@patch("fastapi_celery.routers.api_file_processor.get_s3_key_prefix", return_value="mock/prefix.json")
 @patch("fastapi_celery.routers.api_file_processor.BEConnector")
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
 @patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
-async def test_stop_task_inprogress_flow(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_revoke):
+def test_stop_task_inprogress_flow_s3_fail(mock_get_celery_task, mock_get_all_steps_for_task, mock_BEConnector, mock_get_all_steps, mock_get_task, mock_revoke, mock_disable=None, mock_write_json=None):
     mock_get_celery_task.return_value = {
         "status": StatusEnum.PROCESSING.name,
-        "file_record": {"target_bucket_name": "mock-bucket"},
-        "tracking_model": {"tracking_id": "track_123", "request_id": "req_001"},
+        "file_record": {
+            "target_bucket_name": "mock-bucket",
+            "file_path": "/tmp/order.csv",
+            "document_type": "order",
+            "file_size": "111",
+        },
+        "tracking_model": {"request_id": "req_001"},
+        "context_data": {
+            "request_id": "req_001",
+            "step_detail": [{}, {}],
+            "workflow_detail": {"metadata_api": {"session_finish_api": {}}},
+        },
         "start_session_model": {"id": "session_1"},
     }
     
@@ -181,16 +209,69 @@ async def test_stop_task_inprogress_flow(mock_get_celery_task, mock_get_all_step
             "start_step_model": {"workflowHistoryId": "hist_1"},
         }
     }
-
-
-    fut = asyncio.Future()
-    fut.set_result(MagicMock(status_code=200))
-    mock_BEConnector.return_value.post = MagicMock(return_value=fut)
+    async def _post():
+        return {"status_code": 200}
+    mock_BEConnector.return_value.post = _post
 
     payload = {"task_id": "task_456", "reason": "Test InProgress"}
     response = client.post("/tasks/stop", json=payload)
 
     assert response.status_code == 200
+    # Even with S3 failure response still success for stop operation
     res_json = response.json()
     assert res_json["status"] == "Task stopped successfully"
     mock_revoke.assert_called_once_with("task_456", terminate=True, signal="SIGKILL")
+
+
+@patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
+@patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task", return_value={})
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
+def test_stop_task_non_processing_status(mock_get_celery_task, mock_get_all_steps_for_task, mock_revoke):
+    mock_get_celery_task.return_value = {
+        "status": StatusEnum.SUCCESS.name,
+        "file_record": {},
+    }
+    resp = client.post("/tasks/stop", json={"task_id": "finished_task"})
+    assert resp.status_code == 500
+    assert resp.json()["error"] == "Workflow has been done or stopped! Cannot stop the task"
+    mock_revoke.assert_not_called()
+
+
+@patch("fastapi_celery.routers.api_file_processor.DISABLE_STOP_TASK_ENDPOINT", False)
+@patch("fastapi_celery.routers.api_file_processor.celery_app.control.revoke")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_all_steps_for_task")
+@patch("fastapi_celery.routers.api_file_processor.RedisConnector.get_celery_task")
+def test_stop_task_step_index_error(mock_get_celery_task, mock_get_all_steps_for_task, mock_revoke):
+    # Context step_detail too short for stepOrder=1 (only one element at index 0)
+    mock_get_celery_task.return_value = {
+        "status": StatusEnum.PROCESSING.name,
+        "file_record": {
+            "target_bucket_name": "mock-bucket",
+            "file_path": "/tmp/order.csv",
+            "document_type": "order",
+            "file_size": "111",
+        },
+        "tracking_model": {"request_id": "req_001"},
+        "context_data": {
+            "request_id": "req_001",
+            "step_detail": [{}],
+            "workflow_detail": {"metadata_api": {"session_finish_api": {}}},
+        },
+        "start_session_model": {"id": "session_1"},
+    }
+    mock_get_all_steps_for_task.return_value = {
+        "step_1": {
+            "status": "PROCESSING",
+            "step": {
+                "workflowStepId": "1",
+                "stepName": "Step 1",
+                "stepOrder": 1,
+            },
+            "start_step_model": {"workflowHistoryId": "hist_1"},
+        }
+    }
+    resp = client.post("/tasks/stop", json={"task_id": "task_idx_err"})
+    assert resp.status_code == 500
+    assert "list index out of range" in resp.json()["error"]
+    mock_revoke.assert_called_once()

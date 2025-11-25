@@ -5,20 +5,22 @@ from models.class_models import StatusEnum, StepOutput
 from config_loader import ALLOW_TEST_SLEEP, SLEEP_DURATION
 import time
 
-
-def publish_data(
-    self: ProcessorBase, data_input, response_api, *args, **kwargs
-) -> StepOutput:  # pragma: no cover  # NOSONAR
+def publish_data(self: ProcessorBase, data_input, schema_object, response_api, *args, **kwargs) -> StepOutput: # pragma: no cover  # NOSONAR
     """
     Handles the final publishing step of a data processing workflow.
     This method evaluates the response from an external publish API call, constructs
     a data output payload, and returns a StepOutput indicating success or failure.
     """
     # This method is currently empty. It will be implemented in the future
-    if ALLOW_TEST_SLEEP and SLEEP_DURATION > 0:  # NOSONAR
+    if ALLOW_TEST_SLEEP and SLEEP_DURATION >0: # NOSONAR
         time.sleep(SLEEP_DURATION)
 
-    data_output = build_publish_data_ouput(kwargs.get("connectionDto"))
+    logger.info("connectionDto_log",extra={ "data": kwargs.get("connectionDto")})
+
+    data_output = build_publish_data_output(kwargs.get("connectionDto"))
+
+    logger.info("data_output_log",extra={ "data_output": data_output})
+    
     data = None
     try:
 
@@ -28,6 +30,7 @@ def publish_data(
         if bool(response_api.get("success")):
             data_output["sentStatus"] = "Sent"
             data = data_input.data
+            step_status = StatusEnum.SUCCESS
         else:
             data_output["sentStatus"] = "Unsend"
             data = data_input.data.model_copy(
@@ -36,26 +39,34 @@ def publish_data(
                     "messages": [response_api.get("message")],
                 }
             )
+            step_status = StatusEnum.FAILED
 
         return StepOutput(
             data=data,
             sub_data={"data_output": data_output},
-            step_status=StatusEnum.FAILED,
+            step_status=step_status,
             step_failure_message=[response_api.get("message")],
         )
     except Exception as e:
         logger.exception(f"[publish_data] An error occurred: {e}", exc_info=True)
+        error_msg = (
+            "[publish_data] missing data_input from previous step"
+            if data_input is None
+            else f"[publish_data] An error occurred: {e}"
+        )
         return StepOutput(
-            data=data,
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [error_msg]
+                }
+            ),
             sub_data={"data_output": data_output},
             step_status=StatusEnum.FAILED,
-            step_failure_message=[f"[publish_data] An error occurred: {e}"],
+            step_failure_message=[error_msg],
         )
 
 
-def copy_file(
-    self: ProcessorBase, data_input, response_api, *args, **kwargs
-) -> dict:  # NOSONAR
+def copy_file(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> dict: # NOSONAR
     """
     Copy a file within or across S3 buckets and update its reference.
     This method:
@@ -98,22 +109,26 @@ def copy_file(
         return {"fileOutputLink": ""}
 
 
-def build_publish_data_ouput(conection: dict) -> dict:
+def build_publish_data_output(connection: dict) -> dict:
     """
-    Builds the data output for publishing data based on the
+    Builds the data output for publishing data based on the 
     provided connection configuration.
     """
-    fields = conection.get("requiredFields")["REQUIRED"]
+    fields = connection.get("requiredFields")["REQUIRED"]
     field_map = {item["name"]: item["value"] for item in fields}
 
-    if conection["connectionType"] == "SFTP":
+    if connection["connectionType"] == "SFTP":
         host = field_map.get("HOST", "")
         user = field_map.get("USER_NAME", "")
         port = field_map.get("PORT", "")
-        return {"sftp": f"{user}@{host}:{port}", "sentStatus": "", "fileLogLink": ""}
+        return {
+            "sftp":f"{user}@{host}:{port}",
+            "sentStatus": "",
+            "fileLogLink": ""
+        }
     else:
         return {
-            "email": field_map.get("EMAIL_ADDRESS", ""),
+            "email":  field_map.get("EMAIL_ADDRESS", ""),
             "sentStatus": "",
-            "fileLogLink": "",
-        }
+            "fileLogLink": ""
+       }

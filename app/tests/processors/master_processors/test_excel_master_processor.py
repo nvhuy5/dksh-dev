@@ -59,7 +59,8 @@ def test_parse_file_to_json_success(processor):
     assert len(result.items) == 2
     assert result.items[0]["Code"] == "001"
     assert result.items[1]["Name"] == "Anna"
-
+    assert result.file_path == "tests/samples/0808fake_xlsx.xlsx"
+    assert result.file_size == "100KB"
 
 def test_parse_file_to_json_metadata_only(processor):
     processor.rows = [
@@ -80,7 +81,8 @@ def test_parse_file_to_json_metadata_only(processor):
     assert result.step_status == StatusEnum.SUCCESS
     assert result.headers == []
     assert result.items == []
-
+    assert result.file_path == "tests/samples/0808fake_xlsx.xlsx"
+    assert result.file_size == "100KB"
 
 def test_parse_file_to_json_exception(processor, monkeypatch):
     processor.rows = [["Bad", "Row"]]
@@ -95,7 +97,8 @@ def test_parse_file_to_json_exception(processor, monkeypatch):
     assert result.step_status == StatusEnum.FAILED
     assert isinstance(result.messages, list)
     assert any("mock error" in msg for msg in result.messages)
-
+    assert result.file_path == "tests/samples/0808fake_xlsx.xlsx"
+    assert result.file_size == "100KB"
 
 def test_extract_table_block_with_metadata(processor):
     processor.rows = [

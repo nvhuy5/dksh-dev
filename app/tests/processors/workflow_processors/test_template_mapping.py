@@ -14,13 +14,13 @@ from fastapi_celery.processors.workflow_processors.template_mapping import (
 @pytest.fixture
 def sample_po_parsed():
     return PODataParsed(
-        original_file_path=Path("/tmp/template.xlsx"),
+        file_path="/tmp/template.xlsx",
         document_type=DocumentType.ORDER,
         po_number="PO12345",
         items=[{"header1": "123", "header2": "456"}],
         metadata={"supplier": "ABC"},
         step_status=StatusEnum.SUCCESS,
-        capacity="small",
+        file_size="small",
         messages=[],
     )
 
@@ -29,6 +29,9 @@ class DummySelf:
     def __init__(self):
         self.tracking_model = None
 
+class DummySchema:
+    def model_copy(self, update=None):
+        return {"messages": update.get("messages")}
 
 # === SUCCESS CASE ===
 def test_template_data_mapping_success(sample_po_parsed):
@@ -41,7 +44,7 @@ def test_template_data_mapping_success(sample_po_parsed):
         ]
     }
 
-    result = template_data_mapping(DummySelf(), data_input, response_api)
+    result = template_data_mapping(DummySelf(), data_input, None, response_api)
 
     assert result.step_status == StatusEnum.SUCCESS
     assert result.step_failure_message is None
@@ -54,13 +57,16 @@ def test_template_data_mapping_success(sample_po_parsed):
 
 def test_template_data_mapping_invalid_response(sample_po_parsed):
     data_input = StepOutput(data=sample_po_parsed)
+    schema_object = DummySchema()
     response_api = None
 
-    with pytest.raises(RuntimeError) as excinfo:
-        template_data_mapping(DummySelf(), data_input, response_api)
+    result = template_data_mapping(DummySelf(), data_input, schema_object, response_api)
 
-    assert "Mapping API did not return a valid response" in str(excinfo.value)
+    assert hasattr(result, "step_status")
+    assert getattr(result, "step_status") == StatusEnum.FAILED
 
+    assert hasattr(result, "step_failure_message")
+    assert "[template_data_mapping] An error occurred" in result.step_failure_message[0]
 
 def test_template_data_mapping_missing_headers(sample_po_parsed):
     data_input = StepOutput(data=sample_po_parsed)
@@ -71,7 +77,7 @@ def test_template_data_mapping_missing_headers(sample_po_parsed):
         ]
     }
 
-    result = template_data_mapping(DummySelf(), data_input, response_api)
+    result = template_data_mapping(DummySelf(), data_input, None, response_api)
 
     assert result.step_status == StatusEnum.FAILED
     assert "expected headers not found" in result.step_failure_message[0]

@@ -63,7 +63,7 @@ def test_parse_file_to_json_basic(s3_file_record):
     assert parsed.items[PO_MAPPING_KEY] == "PO123"
     assert parsed.items["products"][0]["料品代號"] == "A001"
     assert parsed.step_status == StatusEnum.SUCCESS
-    assert parsed.capacity == "2.34 KB"
+    assert parsed.file_size == "2.34 KB"
 
 
 def test_parse_file_with_key_values(s3_file_record):

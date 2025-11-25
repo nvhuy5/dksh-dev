@@ -10,9 +10,9 @@ from models.class_models import StatusEnum
 def mock_file_record():
     """Mocked file_record dictionary for ExcelProcessor."""
     return {
-        "file_path": Path("/fake/path/dummy.xlsx"),
+        "file_path": "dummy.xlsx",
         "document_type": "order",
-        "capacity": "small",
+        "file_size": "small",
     }
 
 
@@ -51,7 +51,7 @@ def test_parse_only_metadata(processor):
     assert result.metadata == {"PO Number": "12345", "Date": "2025-10-17"}
     assert result.items == []
     assert result.step_status == StatusEnum.SUCCESS
-    assert Path(result.original_file_path).name == "dummy.xlsx"
+    assert result.file_path == "dummy.xlsx"
 
 
 def test_parse_with_table(processor):

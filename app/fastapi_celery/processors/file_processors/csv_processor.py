@@ -96,14 +96,14 @@ class CSVProcessor:
             items.extend(block)
 
         return PODataParsed(
-            original_file_path=self.file_record.get("file_path"),
+            file_path=self.file_record.get("file_path"),
             document_type=self.document_type,
             po_number=self.po_number,
             items=items,
             metadata=metadata,
             step_status = StatusEnum.SUCCESS,
             messages=None,
-            capacity=self.file_size,
+            file_size=self.file_size,
         )
 
     def _parse_metadata_rows(self, start_index: int) -> tuple[dict, int]:

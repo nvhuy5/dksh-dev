@@ -4,7 +4,6 @@ from utils import log_helpers
 # === Set up logging ===
 logger = log_helpers.get_logger("xml_helper")
 
-
 def build_processor_setting_xml(processor_args: list[dict[str, str]]) -> str | None:
     """
     Convert processorArgumentDtos into XML format like:
@@ -49,14 +48,13 @@ def build_processor_setting_xml(processor_args: list[dict[str, str]]) -> str | N
     logger.info(f"[build_processor_setting_xml] Generated XML:\n{xml_string}")
     return xml_string
 
-
 def get_data_output_for_rule_mapping(response_api):
-
     data_output = {
         "processorArgs": [],
         "processorConfigXml": "<PROCESSORSETTINGXML></PROCESSORSETTINGXML>",
         "fileLogLink": "",
     }
+ 
     try:
         processor_args = []
         if "processorArgumentDtos" in response_api:
@@ -65,15 +63,15 @@ def get_data_output_for_rule_mapping(response_api):
                 {"name": arg["processorArgumentName"], "value": arg["value"]}
                 for arg in raw_args
             ]
+ 
         xml_data = build_processor_setting_xml(processor_args)
-
         data_output["processorArgs"] = processor_args
         data_output["processorConfigXml"] = xml_data
-
+ 
     except Exception as e:
         logger.error(
             f"[get_data_output_for_rule_mapping] An error occurred: {e}",
             exc_info=True,
         )
-    finally:
-        return data_output
+ 
+    return data_output

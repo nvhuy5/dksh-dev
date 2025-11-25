@@ -2,7 +2,7 @@ import traceback
 import asyncio
 from urllib.parse import urlparse
 from pydantic import BaseModel
-from utils.common_utils import get_step_name
+from utils.common_utils import get_step_name, reverse_step_name
 from connections.be_connection import BEConnector
 from processors.processor_nodes import PROCESS_DEFINITIONS
 from processors.processor_base import ProcessorBase
@@ -13,6 +13,9 @@ from models.class_models import (
     StepDefinition,
     StatusEnum,
     StepOutput,
+    DocumentType,
+    PODataParsed, 
+    MasterDataParsed
 )
 from models.tracking_models import ServiceLog, LogType
 from typing import Any
@@ -33,28 +36,27 @@ async def execute_step(file_processor: ProcessorBase, context_data: ContextData,
         if not step_config:
             raise NotImplementedError(f"The step [{step_name or step.stepName}] is not yet defined")
         
-        prev_order = 0
         prev_step = None
+        prev_step_name = None
         if step.stepOrder > 0:
-            prev_order = step.stepOrder - 1
-            prev_step = next((s for s in full_sorted_steps if s.stepOrder == prev_order), None)
+            prev_step_name = next((key for key, val in PROCESS_DEFINITIONS.items() if val.data_output == step_config.data_input), None)
+            reserve_prev_step_name = reverse_step_name(prev_step_name, full_sorted_steps)
+            prev_step = next((s for s in full_sorted_steps if s.stepName == reserve_prev_step_name), None)
         
         if getattr(file_processor.tracking_model, "rerun_step_id", None):
-            if step.workflowStepId == file_processor.tracking_model.rerun_step_id:
                 if prev_step:
-                    prev_result = file_processor.get_step_result_from_s3(step=prev_step)
-                    if prev_result:
-                        key_name = step_config.data_input
+                    prev_step_config = PROCESS_DEFINITIONS.get(prev_step_name)
+                    key_name = prev_step_config.data_output
+                
+                    if key_name and key_name not in context_data.processing_steps:
+                        prev_result = file_processor.get_step_result_from_s3(step = prev_step)
                         step_output = StepOutput(
                             data=prev_result,
                             sub_data={}, 
                             step_status=StatusEnum.SUCCESS,
                             step_failure_message=None,
                         )
-                        if key_name:
-                            context_data.processing_steps[key_name] = step_output
-                    else:
-                        logger.info(f"Not found data for previous step [{prev_step.stepName}]")
+                        context_data.processing_steps[key_name] = step_output
                 else:
                     logger.info("First step - No need to load previous step")
 
@@ -134,8 +136,13 @@ async def execute_step(file_processor: ProcessorBase, context_data: ContextData,
                 "traceback": full_tb,
             },
         )
+        schema_object = build_schema_object(file_processor,context_data)
         return StepOutput(
-            data=None,
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [f"Error occurred while executing step: {e}"]
+                }
+            ),
             sub_data={},
             step_status=StatusEnum.FAILED,
             step_failure_message=[str(e)],
@@ -375,26 +382,26 @@ def fill_required_keys_from_response(
     if isinstance(response, dict):
         # Directly map keys from dict response
         for key, value in response.items():
-            if key in required and not required[key]:
+            if key in required:
                     required[key] = value
     elif isinstance(response, list):
         # Iterate all dicts in list, overwrite if key repeats
         for item in response:
             if isinstance(item, dict):
                 for key, value in item.items():
-                    if key in required and not required[key]:
+                    if key in required:
                             required[key] = value
 
     return required
 
 
-async def run_function(
+async def run_function( 
     file_processor: ProcessorBase, 
     context_data: ContextData, 
     response: Any, 
     step: WorkflowStep,
     step_config: StepDefinition | None, 
-    func_name: str | None) -> Any:
+    func_name: str | None) -> Any: # pragma: no cover
     """
     Execute a target function from the given file processor (sync or async).
 
@@ -416,6 +423,10 @@ async def run_function(
         raise AttributeError(f"Function '{func_name}' not found in FileProcessor.")
 
     args = []
+    schema_object = None
+    
+    logger.info(f"kwargs_{step.stepName}", extra={"data": step_config.kwargs})
+
     kwargs = fill_required_keys_from_response(response, step_config.kwargs)
     data_input = (
         context_data.processing_steps.get(step_config.data_input)
@@ -423,11 +434,13 @@ async def run_function(
         else None
     )
 
+    schema_object = build_schema_object(file_processor,context_data)
+
     kwargs["step"] = step
     result = (
-        await function(data_input, response, *args, **kwargs)
+        await function(data_input, schema_object, response, *args, **kwargs)
         if asyncio.iscoroutinefunction(function)
-        else function(data_input, response, *args, **kwargs)
+        else function(data_input, schema_object, response, *args, **kwargs)
     )
 
     key_name = step_config.data_output
@@ -435,3 +448,52 @@ async def run_function(
         context_data.processing_steps[key_name] = result
 
     return result
+
+def build_schema_object(
+        file_processor: ProcessorBase, context_data: ContextData
+    ) -> PODataParsed | MasterDataParsed: # pragma: no cover
+    """
+    Build a schema object based on the file record and parsed data in context_data.
+
+    This function checks if there is a parsed step available in context_data 
+    ('parsed_data' or 'master_parsed_data') and extracts its items. 
+    It then constructs either a PODataParsed or MasterDataParsed object 
+    depending on the document type of the file.
+
+    Returns:
+        PODataParsed or MasterDataParsed: Initialized schema object with default
+        FAILED status and messages, ready to be passed into processing functions.
+    """
+    parse_step = (
+        context_data.processing_steps.get("mapped_data")
+        or context_data.processing_steps.get("parsed_data")
+        or context_data.processing_steps.get("master_parsed_data")
+    )
+
+    items = parse_step.data.items if parse_step else []
+
+    file_path = file_processor.file_record.get("file_path")
+    document_type = file_processor.file_record.get("document_type")
+    file_size = file_processor.file_record.get("file_size")
+
+    if document_type == DocumentType.ORDER:
+        return PODataParsed(
+            file_path=file_path,
+            document_type=document_type,
+            po_number=None,
+            items=items,
+            metadata={},
+            step_status=StatusEnum.FAILED,
+            messages=[],
+            file_size=file_size
+        )
+    elif document_type == DocumentType.MASTER_DATA:
+        return MasterDataParsed(
+            file_path=file_path,
+            headers=[],
+            document_type=document_type,
+            items=items,
+            step_status=StatusEnum.FAILED,
+            messages=[],
+            file_size=file_size
+        )

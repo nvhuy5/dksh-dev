@@ -57,9 +57,9 @@ def mock_helpers(monkeypatch):
         lambda self: setattr(self, "file_extension", ".txt") or setattr(self, "file_name_wo_ext", "dummy")
     )
 
-    # Patch _get_file_capacity to return fake size
+    # Patch _get_file_size to return fake size
     monkeypatch.setattr(
-        "fastapi_celery.utils.ext_extraction.FileExtensionProcessor._get_file_capacity",
+        "fastapi_celery.utils.ext_extraction.FileExtensionProcessor._get_file_size",
         lambda self: setattr(self, "file_size", "1.00 KB")
     )
 
@@ -106,12 +106,12 @@ def test_get_file_extension_invalid_extension(tracking_model):
             processor._get_file_extension()
 
 
-def test_get_file_capacity_local(tracking_model):
+def test_get_file_size_local(tracking_model):
     processor = FileExtensionProcessor(tracking_model, source_type=SourceType.LOCAL)
     assert processor.file_size == "1.00 KB"
 
 
-def test_get_file_capacity_s3(tracking_model):
+def test_get_file_size_s3(tracking_model):
     processor = FileExtensionProcessor(tracking_model, source_type=SourceType.S3)
     assert processor.file_size == "1.00 KB"
 

@@ -3,10 +3,14 @@ import traceback
 from dataclasses import asdict
 from fastapi import APIRouter, HTTPException, status, Request
 from fastapi.responses import JSONResponse
+from utils import read_n_write_s3
 from utils.bucket_helper import get_s3_key_prefix
 from models.body_models import WorkflowSessionFinishBody, WorkflowStepFinishBody
 from models.class_models import (
+    ContextData,
     FilePathRequest,
+    PODataParsed,
+    StepOutput,
     StopTaskRequest,
     ApiUrl,
     StatusEnum,
@@ -55,12 +59,17 @@ async def process_file(data: FilePathRequest, http_request: Request) -> Dict[str
     try:
         # If run for the first time, it will create request_id (celery_id)
         # If run again, it will reuse request_id (celery_id)
+        is_cancel = False
+        if data.is_cancel:
+            is_cancel = str(data.is_cancel).strip().lower() in ("True", "true", "1")
+            new_celery_id = getattr(http_request.state, "request_id", str(uuid4()))
+
         if not (data.celery_id and data.celery_id.strip()):
             data.celery_id = getattr(http_request.state, "request_id", str(uuid4()))
 
         celery_task.task_execute.apply_async(
             kwargs={"data": data.model_dump()},
-            task_id=data.celery_id,
+            task_id=new_celery_id if is_cancel else data.celery_id,
         )
         
         logger.info(
@@ -166,9 +175,24 @@ async def stop(data: StopTaskRequest) -> Dict[str, Any]:
 
     try:
         file_record = celery_task["file_record"]
-        tracking_model = TrackingModel(**celery_task["tracking_model"])
-        start_session_model = celery_task["start_session_model"]
+        tracking_model_raw = celery_task.get("tracking_model")
+        tracking_model = TrackingModel(**tracking_model_raw) if tracking_model_raw else TrackingModel(
+            request_id=celery_id
+        )
+
+        context_data_raw = celery_task.get("context_data")
+        if context_data_raw:
+            try:
+                context_data = ContextData(**context_data_raw)
+            except Exception:
+                # Fallback: build minimal context
+                context_data = ContextData(request_id=celery_id, step_detail=[], workflow_detail=None)
+        else:
+            context_data = ContextData(request_id=celery_id, step_detail=[], workflow_detail=None)
+
+        start_session_model = celery_task.get("start_session_model", {})
         target_bucket_name = file_record["target_bucket_name"]
+        s3_key_prefix = None
         
         for step_id, step_data in steps.items():
             if step_data["status"] == "PROCESSING":
@@ -181,6 +205,8 @@ async def stop(data: StopTaskRequest) -> Dict[str, Any]:
                 tmp_data_output = json.dumps(data_output)
                 
                 start_step_model = step_data["start_step_model"]
+
+                context_data.step_detail[step.stepOrder].data_output = data_output
                 
                 # Update step status to CANCEL
                 body_data = asdict(WorkflowStepFinishBody(
@@ -194,6 +220,11 @@ async def stop(data: StopTaskRequest) -> Dict[str, Any]:
                 finish_step_response = await finish_step_connector.post()
                 logger.info(f"finish_step_response_log: [{finish_step_response}]")
 
+                context_data.step_detail[step.stepOrder].metadata_api.Step_finish_api.url = ApiUrl.WORKFLOW_STEP_FINISH.full_url()
+                context_data.step_detail[step.stepOrder].metadata_api.Step_finish_api.method = "POST"
+                context_data.step_detail[step.stepOrder].metadata_api.Step_finish_api.request = body_data
+                context_data.step_detail[step.stepOrder].metadata_api.Step_finish_api.response = finish_step_response
+
         # Update session status to CANCEL
         body_data = asdict(WorkflowSessionFinishBody(
             id=start_session_model["id"],
@@ -204,6 +235,66 @@ async def stop(data: StopTaskRequest) -> Dict[str, Any]:
         session_response = await session_connector.post()
 
         logger.info(f"session_response_log: [{session_response}]")
+
+        context_data.workflow_detail.metadata_api.session_finish_api.url = ApiUrl.WORKFLOW_SESSION_FINISH.full_url()
+        context_data.workflow_detail.metadata_api.session_finish_api.method = "POST"
+        context_data.workflow_detail.metadata_api.session_finish_api.request = body_data
+        context_data.workflow_detail.metadata_api.session_finish_api.response = session_response
+
+        # Convert context objects to plain dicts for schema compatibility
+        step_detail_dump = None
+        if context_data.step_detail is not None:
+            step_detail_dump = [
+                (sd.model_dump() if hasattr(sd, "model_dump") else sd)
+                for sd in context_data.step_detail
+            ]
+
+        workflow_detail_dump = None
+        if context_data.workflow_detail is not None:
+            workflow_detail_dump = (
+                context_data.workflow_detail.model_dump()
+                if hasattr(context_data.workflow_detail, "model_dump")
+                else context_data.workflow_detail
+            )
+
+        schema_object = PODataParsed(
+            file_path=file_record["file_path"],
+            document_type=file_record["document_type"],
+            po_number=None,
+            items=[],
+            metadata={},
+            step_status=StatusEnum.CANCEL,
+            messages=[f"Revoked Celery task {celery_id} with reason: {reason}"],
+            file_size=file_record["file_size"],
+            step_detail=step_detail_dump,
+            workflow_detail=workflow_detail_dump,
+            json_output=s3_key_prefix
+        )
+
+        step_output = StepOutput(
+            data=schema_object,
+            sub_data={},
+            step_status=StatusEnum.CANCEL,
+            step_failure_message=[f"Revoked Celery task {celery_id} with reason: {reason}"],
+        )
+
+        result = read_n_write_s3.write_json_to_s3(
+            json_data=step_output,
+            bucket_name=target_bucket_name,
+            s3_key_prefix=s3_key_prefix,
+        )
+        if result.get("status") == "Success":
+            logger.info(
+                f"[write_json_to_s3] Successfully wrote JSON file to S3 "
+                f"(bucket='{target_bucket_name}', prefix='{s3_key_prefix}').",
+            )
+        else:
+            logger.error(
+                f"[write_json_to_s3] Failed to write JSON to S3 "
+                f"(bucket='{target_bucket_name}', prefix='{s3_key_prefix}'). "
+                f"error={result.get('error')}"
+            )
+
   
         return {
             "status": "Task stopped successfully",

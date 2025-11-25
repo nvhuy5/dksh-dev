@@ -66,25 +66,25 @@ class ExcelMasterProcessor(excel_helper.ExcelHelper):
                 i = next_index if table_block else i + 1
 
             return MasterDataParsed(
-                original_file_path=self.file_record.get("file_path"),
+                file_path=self.file_record.get("file_path"),
                 headers=headers,
                 document_type=self.file_record.get("document_type"),
                 items=items,
                 step_status=StatusEnum.SUCCESS,
                 messages=None,
-                capacity=self.file_record.get("file_size"),
+                file_size=self.file_record.get("file_size"),
             )
 
         except Exception as e:
             print(f"Error while parsing file to JSON: {e}")
             return MasterDataParsed(
-                original_file_path=self.file_record.get("file_path"),
+                file_path=self.file_record.get("file_path"),
                 headers=[],
                 document_type=self.file_record.get("document_type"),
                 items=[],
                 step_status=StatusEnum.FAILED,
                 messages=[traceback.format_exc()],
-                capacity=self.file_record.get("file_size"),
+                file_size=self.file_record.get("file_size"),
             )
 
     def _clean_row(self, row):

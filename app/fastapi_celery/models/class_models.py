@@ -98,6 +98,8 @@ class FilePathRequest(BaseModel):
     celery_id: str | None = None
     rerun_attempt: int | None = None
     rerun_step_id: str | None = None
+    rerun_session_id: str | None = None
+    is_cancel: str | None = None
 
 
 class WorkflowStep(BaseModel):
@@ -161,12 +163,12 @@ class StepDefinition(BaseModel):  # pragma: no cover  # NOSONAR
     extract_to: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_constraints(cls, values):
-        if values.require_data_output and not values.data_output:
+    def validate_constraints(self):
+        if self.require_data_output and not self.data_output:
             raise ValueError(
                 "Invalid config: 'data_output' is required when 'require_data_output' is True."
             )
-        return values
+        return self
 
 
 class StepOutput(BaseModel):
@@ -189,13 +191,13 @@ class MasterDataParsed(BaseModel):
         use_enum_values=False
     )
     
-    original_file_path: Path
+    file_path: str
     headers: list[str] | dict[str, Any]
     document_type: DocumentType
     items: list[dict[str, Any]] | dict[str, Any]
     step_status: StatusEnum | None
     messages: list[str] | None = None
-    capacity: str
+    file_size: str
     step_detail: list[dict[str, Any]] | None = None
     workflow_detail: dict[str, Any] | None = None
     json_output: str | None = None
@@ -219,14 +221,14 @@ class PODataParsed(BaseModel):
         use_enum_values=False
     )
 
-    original_file_path: Path
+    file_path: str
     document_type: DocumentType
     po_number: str | None
     items: list[dict[str, Any]] | dict[str, Any]
     metadata: dict[str, str] | None
     step_status: StatusEnum | None
     messages: list[str] | None = None
-    capacity: str
+    file_size: str
     step_detail: list[dict[str, Any]] | None = None
     workflow_detail: dict[str, Any] | None = None
     json_output: str | None = None
@@ -284,3 +286,7 @@ class ContextData(BaseModel):
     step_detail: list[StepDetail] | None = None
     workflow_detail: WorkflowDetailConfig | None = None
     processing_steps: dict = Field(default_factory=dict)
+
+class HealthResponse(BaseModel):
+    status: str
+    message: str | None = None

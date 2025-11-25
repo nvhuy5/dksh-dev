@@ -11,28 +11,28 @@ from models.class_models import MasterDataParsed, PODataParsed
 @pytest.fixture
 def po_data_dict():
     return {
-        "original_file_path": "path/to/file.txt",
+        "file_path": "path/to/file.txt",
         "document_type": "order",
         "po_number": "PO123",
         "items": {"a": 1},
         "metadata": None,
         "step_status": "1",
         "messages": None,
-        "capacity": "3 KB",
+        "file_size": "3 KB",
     }
 
 
 @pytest.fixture
 def master_data_dict():
     return {
-        "original_file_path": "path/to/master.txt",
+        "file_path": "path/to/master.txt",
         "document_type": "master_data",
         "headers": ["col1", "col2"],
         "items": {"data": "ok"},
         "metadata": None,
         "step_status": "1",
         "messages": None,
-        "capacity": "5 KB",
+        "file_size": "5 KB",
     }
 
 
@@ -51,7 +51,8 @@ def test_parse_data_with_master_data_document(master_data_dict):
     result = parse_data(DocumentType.MASTER_DATA, master_data_dict)
     assert isinstance(result, MasterDataParsed)
     assert result.document_type == DocumentType.MASTER_DATA.value
-
+    assert result.file_size == "5 KB"
+    assert result.file_path == "path/to/master.txt"
 
 def test_parse_data_with_custom_type(po_data_dict):
     """Should use provided custom_type instead of default mapping"""

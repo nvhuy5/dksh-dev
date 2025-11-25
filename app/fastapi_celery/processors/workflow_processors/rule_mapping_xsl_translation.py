@@ -8,7 +8,7 @@ from config_loader import ALLOW_TEST_SLEEP, SLEEP_DURATION
 import time
 
 
-def xsl_translation(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
+def xsl_translation(self: ProcessorBase, data_input, schema_object, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
     if ALLOW_TEST_SLEEP and SLEEP_DURATION >0: # NOSONAR
         time.sleep(SLEEP_DURATION)
         
@@ -45,9 +45,18 @@ def xsl_translation(self: ProcessorBase, data_input, response_api, *args, **kwar
 
     except Exception as e:
         logger.exception(f"[xsl_translation] An error occurred: {e}", exc_info=True)
+        error_msg = (
+            "[xsl_translation] missing data_input from previous step"
+            if data_input is None
+            else f"[xsl_translation] An error occurred: {e}"
+        )
         return StepOutput(
-            data=None,
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [error_msg]
+                }
+            ),
             sub_data={"data_output": data_output},
             step_status=StatusEnum.FAILED,
-            step_failure_message=[f"[xsl_translation] An error occurred: {e}"],
+            step_failure_message=[error_msg],
         )

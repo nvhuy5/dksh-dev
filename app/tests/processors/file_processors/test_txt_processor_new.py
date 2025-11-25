@@ -98,14 +98,14 @@ def test_txt004_parse_file_to_json_calls_super(mock_super, dummy_tracking_model)
 def test_integration_all_templates_call_super(monkeypatch, dummy_tracking_model):
     """Ensure all subclasses can call parse_file_to_json without errors"""
     dummy_return = PODataParsed(
-        original_file_path=dummy_tracking_model.file_path,
+        file_path=dummy_tracking_model.file_path,
         document_type=DocumentType.ORDER,
         po_number="PO123",
         items={"a": 1},
         metadata=None,
         step_status=StatusEnum.SUCCESS,
         messages=None,
-        capacity="1 KB",
+        file_size="1 KB",
     )
 
     called = {}

@@ -4,7 +4,7 @@ from typing import AsyncIterator
 
 from routers import api_file_processor, api_healthcheck
 import config_loader
-from utils.middlewares.request_id import RequestIDMiddleware
+from utils.middlewares.middlewares import RequestIDMiddleware, AccessLogFilterMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan, root_path="/fastapi")
 app.add_middleware(RequestIDMiddleware)
+app.add_middleware(AccessLogFilterMiddleware, exclude_paths=["/fastapi/api_health"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Restrict in production!

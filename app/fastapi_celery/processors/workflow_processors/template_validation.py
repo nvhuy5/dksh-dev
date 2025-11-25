@@ -23,27 +23,27 @@ class TemplateValidation:
 
     def _check_required(self, val: Any, required: bool, allow_empty: bool, col_key: str, idx: int) -> str | None:
         if required and not allow_empty and (val is None or str(val).strip() == ""):
-            return f"Row {idx}: Field '{col_key}' is required but empty"
+            return f"Row {idx}: '{col_key}' is required but empty"
         return None
  
     def _check_max_length(self, val: Any, max_length: int | None, col_key: str, idx: int) -> str | None:
         if max_length and len(str(val)) > int(max_length):
-            return f"Row {idx}: Field '{col_key}' exceeds maxLength {max_length}"
+            return f"Row {idx}: '{col_key}' exceeds maxLength {max_length}"
         return None
  
     def _check_regex(self, val: Any, regex: str | None, col_key: str, idx: int) -> str | None:
         if regex and not re.fullmatch(regex, str(val)):
-            return f"Row {idx}: Field '{col_key}'='{val}' does not match regex {regex}"
+            return f"Row {idx}: '{col_key}'='{val}' does not match regex {regex}"
         return None
  
     def _check_dtype(self, val: Any, dtype: str | None, col_key: str, idx: int) -> str | None:
         if dtype == "Number" and not re.fullmatch(r"-?\d+(\.\d+)?", str(val)):
-            return f"Row {idx}: Field '{col_key}'='{val}' is not a valid number"
+            return f"Row {idx}: '{col_key}'='{val}' is not a valid number"
         if dtype == "Date":
             try:
                 pd.to_datetime(val, errors="raise")
             except Exception:
-                return f"Row {idx}: Field '{col_key}'='{val}' is not a valid date"
+                return f"Row {idx}: '{col_key}'='{val}' is not a valid date"
         return None
  
     def _validate_cell(self, val: Any, col_def: dict[str, Any], col_key: str, idx: int) -> tuple[list[str], bool]:
@@ -84,7 +84,7 @@ class TemplateValidation:
         """
         errors = []
         total_records = len(self.items)
-        error_records = 0
+        error_rows = set()
 
         df_columns = list(self.items[0].keys()) if self.items else []
 
@@ -103,23 +103,10 @@ class TemplateValidation:
                 val = row.get(col_key)
                 list_error, is_error = self._validate_cell(val, col_def, col_key, idx)
                 if is_error:
-                    error_records = error_records + 1
+                    error_rows.add(idx)
                 errors.extend(list_error)
-
-        if errors:
-            logger.error(
-                f"Template format validation failed with {len(errors)} error(s)",
-                extra=self._log_extra(log_type=LogType.ERROR),
-            )
-            return self.po_json.model_copy(
-                update={"step_status": StatusEnum.FAILED, "messages": errors}
-            ), {} 
-
-        logger.info(
-            f"{__name__} successfully executed!",
-            extra=self._log_extra(log_type=LogType.TASK),
-        )
-
+        
+        error_records = len(error_rows)
         valid_records = total_records - error_records
 
         data_output = {
@@ -128,6 +115,20 @@ class TemplateValidation:
             "errorRecords": error_records,
             "fileLogLink": ""
         }
+
+        if errors:
+            logger.error(
+                f"Template format validation failed with {len(errors)} error(s)",
+                extra=self._log_extra(log_type=LogType.ERROR),
+            )
+            return self.po_json.model_copy(
+                update={"step_status": StatusEnum.FAILED, "messages": errors}
+            ), data_output
+
+        logger.info(
+            f"{__name__} successfully executed!",
+            extra=self._log_extra(log_type=LogType.TASK),
+        )
 
         return self.po_json.model_copy( 
             update={"step_status": StatusEnum.SUCCESS, "messages": None}
@@ -140,7 +141,7 @@ class TemplateValidation:
             "data": self.tracking_model,
         }
  
-def template_format_validation(self: ProcessorBase, data_input, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
+def template_format_validation(self: ProcessorBase, data_input, schema_object, response_api, *args, **kwargs) -> StepOutput: # NOSONAR
     if ALLOW_TEST_SLEEP and SLEEP_DURATION >0: # NOSONAR
         time.sleep(SLEEP_DURATION)
 
@@ -174,16 +175,16 @@ def template_format_validation(self: ProcessorBase, data_input, response_api, *a
             )
             return StepOutput(
                 data=failed_output,
-                sub_data={},
+                sub_data={"data_output": data_output},
                 step_status=StatusEnum.FAILED,
                 step_failure_message=failed_output.messages,
             )
     
         # Step 2: run validation
         po_validation = TemplateValidation(po_json=data_input.data, tracking_model=self.tracking_model)
-        validation_result, data_output = po_validation.data_validation(schema_columns=schema_columns)
+        validation_result, validate_output = po_validation.data_validation(schema_columns=schema_columns)
     
-    
+        data_output.update(validate_output)
         # Step 3: wrap into StepOutput
         return StepOutput(
             data=validation_result,
@@ -208,10 +209,18 @@ def template_format_validation(self: ProcessorBase, data_input, response_api, *a
             },
             exc_info=True,
         )
-
+        error_msg = (
+            "[template_validation] missing data_input from previous step"
+            if data_input is None
+            else f"[template_validation] An error occurred: {e}"
+        )
         return StepOutput(
-            data=None,
+            data=schema_object.model_copy(
+                update={
+                    "messages" : [error_msg]
+                }
+            ),
             sub_data={"data_output": data_output},
             step_status=StatusEnum.FAILED,
-            step_failure_message=[f"[template_validation] An error occurred: {e}"]
+            step_failure_message=[error_msg]
         )

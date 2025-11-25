@@ -19,6 +19,8 @@ class TrackingModel(BaseModel):
     sap_masterdata: bool | None = None
     rerun_attempt: int | None = None
     rerun_step_id: str | None = None
+    rerun_session_id: str | None = None
+    is_cancel: str | None = None
 
     @classmethod
     def from_data_request(cls, data: FilePathRequest) -> "TrackingModel":
@@ -29,7 +31,9 @@ class TrackingModel(BaseModel):
             project_name=data.project,
             source_name=data.source,
             rerun_attempt=data.rerun_attempt,
-            rerun_step_id=data.rerun_step_id
+            rerun_step_id=data.rerun_step_id,
+            rerun_session_id=data.rerun_session_id,
+            is_cancel = data.is_cancel
         )
 
 

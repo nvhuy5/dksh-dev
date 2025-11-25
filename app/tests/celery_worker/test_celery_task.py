@@ -30,11 +30,11 @@ async def test_execute_step_full_coverage(step_status):
 
             # --- Mock PROCESS_DEFINITIONS ---
             with patch("fastapi_celery.celery_worker.step_handler.PROCESS_DEFINITIONS", {
-                "FILE_PARSE": MagicMock(function_name="dummy_func", data_input=None, data_output=None, kwargs={})
+                "TEMPLATE_FILE_PARSE": MagicMock(function_name="dummy_func", data_input=None, data_output=None, kwargs={})
             }):
 
                 # --- Add dummy method to processor ---
-                async def dummy_func(data_input, response, **kwargs):
+                async def dummy_func(data_input, schema_object, response, **kwargs):
                     return StepOutput(data={"ok": True}, step_status=step_status)
 
                 processor_instance.dummy_func = dummy_func
@@ -42,7 +42,7 @@ async def test_execute_step_full_coverage(step_status):
                 # --- Prepare WorkflowStep ---
                 workflow_step = WorkflowStep(
                     workflowStepId="STEP-1",
-                    stepName="FILE_PARSE",
+                    stepName="TEMPLATE_FILE_PARSE",
                     stepOrder=0  # stepOrder bắt đầu từ 0
                 )
 
@@ -57,11 +57,12 @@ async def test_execute_step_full_coverage(step_status):
                 )
 
                 # --- Patch get_step_name to return the mocked step ---
-                with patch("fastapi_celery.celery_worker.step_handler.get_step_name", return_value="FILE_PARSE"):
-                    # --- Execute step ---
+                with patch("fastapi_celery.celery_worker.step_handler.get_step_name", return_value="TEMPLATE_FILE_PARSE"), \
+                    patch("fastapi_celery.celery_worker.step_handler.run_function",
+                    new=AsyncMock(return_value=StepOutput(data={"ok": True}, step_status=step_status))):
+
                     result = await execute_step(processor_instance, context_data, full_sorted_steps, workflow_step)
 
-                    # --- Assertions ---
                     assert isinstance(result, StepOutput)
                     assert result.step_status == step_status
                     assert result.data == {"ok": True}
